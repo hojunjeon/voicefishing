@@ -1,0 +1,13 @@
+{
+  "topic": "한국어 보이스피싱 통화 시나리오와 Scenario RAG 구성",
+  "scope": "탐지·검색·시연에 쓸 수 있는 출처 기반 시나리오 패턴, 발화 단서, 대응 경계",
+  "worker_axes": ["official", "technical_academic", "community", "video", "social"],
+  "status": "complete",
+  "source_count": 56,
+  "unresolved_items": [
+    "YouTube·Instagram·Threads·TikTok 일부 원문 접근 제한",
+    "커뮤니티 게시물의 실제 사건·대표성 독립 검증 불가",
+    "현재 런타임에 Scenario Judge와 PHISHING_CONFIRMED 상태 전이 미구현",
+    "dense/hybrid retrieval 및 PostgreSQL/pgvector 미구현"
+  ]
+}

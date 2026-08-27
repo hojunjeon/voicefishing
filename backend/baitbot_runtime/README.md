@@ -24,4 +24,7 @@ JSONL 이벤트 로그가 생성됩니다. 로그에는 API 키, Authorization �
 ```powershell
 python backend\baitbot_runtime\event_log.py
 python backend\baitbot_runtime\test_runtime.py
+python backend\baitbot_runtime\test_scenario_rag.py
 ```
+
+Scenario RAG는 `scenario_corpus.json`의 `VERIFIED` 문서만 기본 검색하며, 커뮤니티·재연·소셜 자료는 `CANDIDATE`로 격리합니다. 검색 결과는 `/api/chat` 응답의 `scenario_rag`와 JSONL의 `scenario_rag.completed` 이벤트에서 확인할 수 있습니다.

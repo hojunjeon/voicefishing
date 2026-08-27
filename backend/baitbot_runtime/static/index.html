@@ -152,6 +152,11 @@
         <h2 id="attack-title">attack_events</h2>
         <pre id="attack-events" aria-live="polite">공격 이벤트 없음</pre>
       </section>
+      <section aria-labelledby="scenario-rag-title">
+        <h2 id="scenario-rag-title">Scenario RAG</h2>
+        <p id="scenario-rag-status" class="muted" role="status" aria-live="polite">검색 전</p>
+        <ol id="scenario-rag-results" aria-label="검색된 시나리오 근거"></ol>
+      </section>
     </div>
 
     <section aria-labelledby="timing-title">
@@ -187,6 +192,8 @@
       const eventExtractedCount = document.getElementById('event-extracted-count');
       const eventSchemaAnnouncement = document.getElementById('event-schema-announcement');
       const eventSchemaBody = document.getElementById('event-schema-body');
+      const scenarioRagStatus = document.getElementById('scenario-rag-status');
+      const scenarioRagResults = document.getElementById('scenario-rag-results');
       const EVENT_SCHEMA_FIELDS = [
         { key: 'impersonated_org', label: '사칭 기관' },
         { key: 'requested_amount', label: '요구 금액' },
@@ -288,6 +295,27 @@
         showError(`부분 실패 또는 오류\n${text}`);
         partialArea.hidden = false;
         partialArea.textContent = 'Responder/Extractor 중 일부 처리가 실패했습니다. 표시된 결과는 부분 결과일 수 있습니다.';
+      }
+
+      function renderScenarioRag(payload) {
+        const rag = isRecord(payload) ? payload : {};
+        const status = rag.status || 'UNAVAILABLE';
+        scenarioRagStatus.textContent = status === 'SEARCHED' ? '검색 완료' : status === 'SKIPPED' ? 'Safety 방어로 검색 생략' : status;
+        scenarioRagResults.replaceChildren();
+        const results = Array.isArray(rag.results) ? rag.results : [];
+        if (!results.length) {
+          const empty = document.createElement('li');
+          empty.textContent = '검색 결과 없음';
+          scenarioRagResults.append(empty);
+          return;
+        }
+        results.forEach((result) => {
+          const item = document.createElement('li');
+          const title = result && result.title ? String(result.title) : '이름 없는 문서';
+          const score = result && result.score !== undefined ? ` · ${result.score}` : '';
+          item.textContent = `${title}${score}${result && result.is_benign ? ' · 정상 대조' : ''}`;
+          scenarioRagResults.append(item);
+        });
       }
 
       function isRecord(value) {
@@ -411,6 +439,7 @@
         else renderChatFallback(data);
         renderEventSchema(data.event_schema);
         document.getElementById('attack-events').textContent = jsonText(data.attack_events, '공격 이벤트 없음');
+        renderScenarioRag(data.scenario_rag);
         renderTimings(data.timings_ms, data.errors);
         renderErrors(data.errors);
       }

@@ -1,7 +1,8 @@
 """Text-only baitbot runtime for the local Aegis MVP demo.
 
-The runtime owns one in-memory session.  It deliberately excludes persistence,
-TTS, scenario judging, and RAG; those are later integration boundaries.
+The runtime owns one in-memory session. Persistence, TTS, and scenario judging
+remain later integration boundaries; reviewed Scenario RAG retrieval is wired
+for evidence inspection.
 """
 
 from __future__ import annotations
@@ -20,8 +21,10 @@ from typing import Any, Mapping, Protocol
 
 try:  # Support both ``python test_runtime.py`` and package imports.
     from .event_log import log_event
+    from .scenario_rag import ScenarioRAG
 except ImportError:  # pragma: no cover - exercised by the standalone self-check.
     from event_log import log_event
+    from scenario_rag import ScenarioRAG
 
 
 DEFAULT_MODEL = "stealth/ox-alpha"
@@ -694,6 +697,7 @@ class BaitbotRuntime:
         model: str | None = None,
         reasoning: str | None = None,
         event_logger: Callable[..., None] | None = None,
+        scenario_rag: ScenarioRAG | None = None,
     ) -> None:
         self._event_logger = event_logger or log_event
         self._uses_openrouter = client is None
@@ -703,6 +707,7 @@ class BaitbotRuntime:
         self.reasoning = _validate_reasoning(
             reasoning or os.getenv("OPENROUTER_REASONING_EFFORT") or DEFAULT_REASONING
         )
+        self._scenario_rag = scenario_rag or ScenarioRAG()
         self._lock = asyncio.Lock()
         self._reset_unlocked(event="session.created")
 
@@ -711,7 +716,18 @@ class BaitbotRuntime:
         return bool(self._uses_openrouter and getattr(self._client, "_api_key", None)) or not self._uses_openrouter
 
     def config(self) -> dict[str, Any]:
-        return {"model": self.model, "reasoning": self.reasoning, "key_configured": self.key_configured}
+        health = self._scenario_rag.health()
+        return {
+            "model": self.model,
+            "reasoning": self.reasoning,
+            "key_configured": self.key_configured,
+            "scenario_rag": {
+                "document_count": health["document_count"],
+                "retrievable_count": health["retrievable_count"],
+                "candidate_count": health["candidate_count"],
+                "benign_count": health["benign_count"],
+            },
+        }
 
     def _log(self, event: str, **fields: Any) -> None:
         """Logging is observational: a disk/logger failure must not break a turn."""
@@ -925,6 +941,49 @@ class BaitbotRuntime:
             [entry for entry in self.conversation if entry.get("context_visible", True)]
         )
 
+    def _scenario_query(self) -> str:
+        scammer_turns = [
+            str(entry.get("text", ""))
+            for entry in self.conversation
+            if entry.get("speaker") == "SCAMMER" and entry.get("context_visible", True)
+        ]
+        return "\n".join(scammer_turns[-8:])
+
+    def _retrieve_scenarios(self, turn_id: str) -> tuple[dict[str, Any], float]:
+        query = self._scenario_query()
+        started = time.perf_counter()
+        try:
+            results = self._scenario_rag.retrieve(query, top_k=5, include_benign=True)
+        except Exception:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            self._log(
+                "scenario_rag.failed",
+                level="ERROR",
+                operation="scenario_rag",
+                turn_id=turn_id,
+                status="failed",
+                duration_ms=elapsed_ms,
+                details={"cause": "retrieval_error"},
+            )
+            return {"status": "UNAVAILABLE", "results": []}, elapsed_ms
+
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        self._log(
+            "scenario_rag.completed",
+            operation="scenario_rag",
+            turn_id=turn_id,
+            status="completed",
+            duration_ms=elapsed_ms,
+            details={
+                "query": query,
+                "top_k": 5,
+                "result_ids": [result["id"] for result in results],
+                "result_count": len(results),
+                "benign_contrast_count": sum(result["is_benign"] for result in results),
+            },
+        )
+        return {"status": "SEARCHED", "results": results}, elapsed_ms
+
     def _merge_patches(self, patches: list[dict[str, Any]]) -> int:
         known_turn_ids = _scammer_text_turn_ids(self.conversation)
         applied = 0
@@ -1041,10 +1100,16 @@ class BaitbotRuntime:
                     "confidence": safety["confidence"],
                 },
             )
-            timings: dict[str, float] = {"safety_ms": safety_ms, "responder_ms": 0.0, "extractor_ms": 0.0}
+            timings: dict[str, float] = {
+                "safety_ms": safety_ms,
+                "scenario_rag_ms": 0.0,
+                "responder_ms": 0.0,
+                "extractor_ms": 0.0,
+            }
             errors: list[str] = []
 
             if safety["action"] == "DEFEND":
+                scenario_rag = {"status": "SKIPPED", "reason": "safety_defend", "results": []}
                 self.conversation[-1]["context_visible"] = False
                 attack_event = {
                     "event_id": f"attack_{uuid.uuid4().hex[:12]}",
@@ -1105,6 +1170,7 @@ class BaitbotRuntime:
                     details={
                         "goals": {
                             "safety": {"success": True, "action": "DEFEND", "cause": None},
+                            "scenario_rag": {"success": True, "skipped": True, "cause": "safety_defend"},
                             "responder": {"success": True, "skipped": True, "cause": "safety_defend"},
                             "extractor": {"success": True, "skipped": True, "cause": "safety_defend"},
                         },
@@ -1120,8 +1186,10 @@ class BaitbotRuntime:
                     effective_reasoning,
                     timings,
                     errors,
+                    scenario_rag,
                 )
 
+            scenario_rag, timings["scenario_rag_ms"] = self._retrieve_scenarios(turn_id)
             conversation_context = self._model_conversation()
             event_context = _json_clone(self.event_schema)
             responder_result, extractor_result = await asyncio.gather(
@@ -1271,6 +1339,10 @@ class BaitbotRuntime:
                 details={
                     "goals": {
                         "safety": {"success": True, "action": safety["action"], "cause": None},
+                        "scenario_rag": {
+                            "success": scenario_rag["status"] == "SEARCHED",
+                            "cause": None if scenario_rag["status"] == "SEARCHED" else "retrieval_error",
+                        },
                         "responder": {
                             "success": responder_ok,
                             "cause": None if responder_ok else responder_result["error"],
@@ -1292,6 +1364,7 @@ class BaitbotRuntime:
                 effective_reasoning,
                 timings,
                 errors,
+                scenario_rag,
             )
 
     def _response(
@@ -1304,6 +1377,7 @@ class BaitbotRuntime:
         reasoning: str,
         timings: dict[str, float],
         errors: list[str],
+        scenario_rag: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
@@ -1312,6 +1386,7 @@ class BaitbotRuntime:
             "scammer_message": scammer_message,
             "baitbot_message": baitbot_message,
             "safety": _json_clone(safety),
+            "scenario_rag": _json_clone(scenario_rag),
             "call_state": "BAIT_ACTIVE",
             "scam_state": "SUSPECTED",
             "event_schema": _json_clone(self.event_schema),
