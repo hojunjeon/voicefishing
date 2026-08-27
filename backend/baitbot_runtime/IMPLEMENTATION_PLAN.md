@@ -7,6 +7,15 @@
 - Make the baitbot primarily hesitant, passive, and compliant-sounding so the scammer keeps talking.
 - Keep the existing Safety, parallel Responder/Extractor, partial-failure, and API contracts intact.
 
+## Provider contract
+
+- Use Google AI Studio Gemini with model `gemini-2.0-flash-lite` by default (supporting `gemini-2.5-flash-lite` alias and `GEMINI_API_KEY`/`GOOGLE_API_KEY`).
+- Read `google_ai_studio` from `C:\Users\SSAFY\Desktop\.env` with `python-dotenv`; an existing process environment value wins.
+- Send `POST /v1beta/models/{model}:generateContent` with the `x-goog-api-key` header.
+- Map `system` messages to `systemInstruction`, other messages to Gemini `contents`, and request JSON with `responseMimeType=application/json`.
+- Keep the reasoning UI/API field for compatibility, but omit reasoning and `thinkingConfig` from Gemini payloads.
+- Retry HTTP 429 exactly once, honoring `Retry-After` up to two seconds.
+
 ## Logging design
 
 ### Destination and format
@@ -15,7 +24,7 @@
 - One file per server run: `runtime_<UTC timestamp>_<run id>.jsonl`
 - UTF-8, one JSON object per line, append-only for that process.
 - Common fields: `timestamp`, `level`, `event`, `run_id`, `request_id`, `session_id`, `turn_id`, `operation`, `status`, `duration_ms`, `model`, `reasoning`, `details`.
-- Never record `openrouter_api`, `Authorization`, or other credential values.
+- Never record `google_ai_studio`, `x-goog-api-key`, or other credential values.
 
 ### Events to record
 
@@ -27,7 +36,7 @@
 | `session.created` / `session.reset` | previous/new session ID |
 | `turn.received` | exact scammer text, turn sequence |
 | `safety.completed` | PASS/DEFEND, matched rule, attack type, duration |
-| `provider.request.started` | responder/extractor, model, reasoning, complete message payload without credentials |
+| `provider.request.started` | responder/extractor, model, preserved reasoning field, complete Gemini message payload without credentials |
 | `provider.request.completed` / `provider.request.failed` | raw provider result or safe error, duration and HTTP error code |
 | `responder.completed` / `responder.fallback` | exact baitbot text, intent, end-call flag, failure reason when applicable |
 | `extractor.completed` / `extractor.failed` | raw patches, applied count, failure reason |
