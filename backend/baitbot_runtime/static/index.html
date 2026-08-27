@@ -94,7 +94,7 @@
       <div class="fields">
         <div>
           <label for="model-input">사기범/Responder/Extractor 공용 모델</label>
-          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="stealth/ox-alpha" disabled>
+          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="gemini-2.0-flash-lite">
         </div>
         <div>
           <label for="reasoning-input">추론 수준</label>
@@ -223,7 +223,7 @@
     (() => {
       'use strict';
 
-      const DEFAULT_MODEL = 'stealth/ox-alpha';
+      const DEFAULT_MODEL = 'gemini-2.0-flash-lite';
       const MAX_BAITBOT_TURNS = 5;
       const ALLOWED_REASONING = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
       const EVENT_SCHEMA_FIELDS = [
