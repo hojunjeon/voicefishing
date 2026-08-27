@@ -16,6 +16,8 @@ from typing import Any, Mapping
 TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
 DEFAULT_CORPUS_PATH = Path(__file__).with_name("scenario_corpus.json")
 RETRIEVABLE_STATUS = "VERIFIED"
+SUSPECTED_MIN_PERCENT = 40
+PHISHING_CONFIRMED_MIN_PERCENT = 80
 
 
 def _flatten(value: Any) -> str:
@@ -157,14 +159,14 @@ class ScenarioRAG:
         query_terms = _terms(query)
         scored: list[tuple[float, list[str], dict[str, Any]]] = []
         for document in self._documents:
+            if not include_benign and document["is_benign"]:
+                continue
             score, matched_terms = self._score(query_terms, self._field_terms[document["id"]])
             scored.append((score, matched_terms, document))
 
         scored.sort(key=lambda item: (-item[0], item[2]["is_benign"], item[2]["id"]))
         positive = [item for item in scored if item[0] > 0]
         selected = positive[:top_k]
-        if not selected and scored:
-            selected = [scored[0]]
 
         if include_benign and top_k > 1:
             benign = next((item for item in scored if item[2]["is_benign"]), None)
@@ -182,6 +184,71 @@ class ScenarioRAG:
             )
             for score, matched_terms, document in selected[:top_k]
         ]
+
+    def assess(self, query: str) -> dict[str, Any]:
+        """Return a deterministic suspicion state from reviewed lexical evidence."""
+
+        results = self.retrieve(query, top_k=5, include_benign=True)
+        suspicion_percent = 0
+        if isinstance(query, str) and query.strip():
+            query_terms = _terms(query)
+            query_word_count = len(TOKEN_RE.findall(query))
+            scam_results = [
+                result
+                for result in results
+                if not result["is_benign"]
+                and result["review_status"] == RETRIEVABLE_STATUS
+                and result["score"] > 0
+            ]
+            if scam_results:
+                top_scam = scam_results[0]
+                evidence_fields = (
+                    ("signals", 6),
+                    ("pretext", 4),
+                    ("requested_actions", 12),
+                    ("pressure_cues", 8),
+                    ("artifacts", 10),
+                    ("roles", 4),
+                )
+                matched_evidence = [
+                    weight
+                    for field, weight in evidence_fields
+                    if query_terms & self._field_terms[top_scam["id"]][field]
+                ]
+                # Score = min(100, 3*similarity (45 cap) + matched evidence
+                # (signal 6, pretext 4, action 12, pressure 8, artifact 10, role 4)
+                # + 2*conversation terms (13 cap)).
+                suspicion_percent = min(
+                    100,
+                    min(45, round(top_scam["score"] * 3))
+                    + sum(matched_evidence)
+                    + min(13, query_word_count * 2),
+                )
+                # A short repeated corpus phrase cannot confirm a call by itself.
+                if len(matched_evidence) < 3 or query_word_count < 6:
+                    suspicion_percent = min(suspicion_percent, PHISHING_CONFIRMED_MIN_PERCENT - 1)
+                benign_score = max(
+                    (result["score"] for result in results if result["is_benign"]),
+                    default=0.0,
+                )
+                if benign_score >= top_scam["score"]:
+                    suspicion_percent = min(suspicion_percent, 35)
+
+        scam_state, handoff_available = self._state_for_suspicion(suspicion_percent)
+        return {
+            "suspicion_percent": suspicion_percent,
+            "scam_state": scam_state,
+            "handoff_available": handoff_available,
+            "results": results,
+        }
+
+    @staticmethod
+    def _state_for_suspicion(percent: int) -> tuple[str, bool]:
+        if percent >= PHISHING_CONFIRMED_MIN_PERCENT:
+            return "PHISHING_CONFIRMED", True
+        if percent >= SUSPECTED_MIN_PERCENT:
+            return "SUSPECTED", False
+        return "NORMAL", False
 
     def health(self) -> dict[str, Any]:
         return {
