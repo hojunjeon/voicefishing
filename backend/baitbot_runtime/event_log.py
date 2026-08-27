@@ -41,11 +41,11 @@ _SENSITIVE_NAMES = (
     "passwd",
     "secret",
     "token",
-    "openrouterapi",
+    "googleaistudio",
 )
 _SECRET_ASSIGNMENT = re.compile(
     r"""(?ix)
-    [\"']?(?:api[_\s-]?key|openrouter_api|authorization|credentials?|password|passwd|secret|token)[\"']?
+    [\"']?(?:api[_\s-]?key|google[_\s-]?ai[_\s-]?studio|authorization|credentials?|password|passwd|secret|token)[\"']?
     \s*[:=]\s*[\"']?(?:bearer\s+)?[^,\s;}\]\"']+
     """
 )
@@ -306,18 +306,20 @@ def _self_check() -> None:
                 model="test/model",
                 reasoning="low",
                 method="POST",
-                openrouter_api="must-not-appear",
+                google_ai_studio="must-not-appear",
+                api_key="must-not-appear",
                 details={
                     "Authorization": "Bearer must-not-appear",
                     "nested": {"credential": "must-not-appear"},
-                    "inline": "openrouter_api=must-not-appear",
+                    "inline": "google_ai_studio=must-not-appear",
                 },
             )
             records = [json.loads(line) for line in logger.path.read_text(encoding="utf-8").splitlines()]
             assert len(records) == 1
             assert all(name in records[0] for name in COMMON_FIELDS)
             rendered = logger.path.read_text(encoding="utf-8")
-            assert "openrouter_api" not in rendered
+            assert "google_ai_studio" not in rendered
+            assert "api_key" not in rendered
             assert "Authorization" not in rendered
             assert "must-not-appear" not in rendered
         finally:
