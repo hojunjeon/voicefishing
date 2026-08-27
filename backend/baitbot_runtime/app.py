@@ -13,10 +13,10 @@ from pydantic import BaseModel
 
 try:
     from .event_log import bind_event_context, get_log_path, log_event
-    from .runtime import BaitbotRuntime
+    from .runtime import BaitbotRuntime, ProviderError, ScenarioRiskError, ScenarioStateError
 except ImportError:  # Vercel imports the configured entrypoint as a top-level module.
     from event_log import bind_event_context, get_log_path, log_event
-    from runtime import BaitbotRuntime
+    from runtime import BaitbotRuntime, ProviderError, ScenarioRiskError, ScenarioStateError
 
 
 class ChatRequest(BaseModel):
@@ -24,6 +24,25 @@ class ChatRequest(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     session_snapshot: dict[str, Any]
+
+
+class Scenario4CallerRequest(BaseModel):
+    scenario_id: Any = None
+    mode: Any
+    conversation: Any = None
+    message: Any = None
+    model: str | None = None
+    reasoning: str | None = None
+
+
+class Scenario4HandoffRequest(BaseModel):
+    scenario_id: Any = None
+    mode: Any
+    conversation: Any
+    baitbot_turn: Any
+    session_snapshot: Any = None
+    model: str | None = None
+    reasoning: str | None = None
 
 
 def _safe_log_path() -> str | None:
@@ -160,6 +179,48 @@ async def chat(request: ChatRequest) -> dict:
             session_snapshot=request.session_snapshot,
         )
         return JSONResponse(content=result, status_code=_chat_status_code(result))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/scenario4/caller")
+async def scenario4_caller(request: Scenario4CallerRequest) -> dict:
+    try:
+        return await runtime.scenario4_caller(
+            scenario_id=request.scenario_id,
+            mode=request.mode,
+            conversation=request.conversation,
+            message=request.message,
+            model=request.model,
+            reasoning=request.reasoning,
+        )
+    except ScenarioStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail="caller provider is unavailable") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/scenario4/handoff")
+async def scenario4_handoff(request: Scenario4HandoffRequest) -> JSONResponse:
+    try:
+        result = await runtime.scenario4_handoff(
+            scenario_id=request.scenario_id,
+            mode=request.mode,
+            conversation=request.conversation,
+            session_snapshot=request.session_snapshot,
+            baitbot_turn=request.baitbot_turn,
+            model=request.model,
+            reasoning=request.reasoning,
+        )
+        return JSONResponse(content=result, status_code=_chat_status_code(result))
+    except ScenarioStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ScenarioRiskError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail="caller provider is unavailable") from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
