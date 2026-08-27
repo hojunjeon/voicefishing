@@ -37,7 +37,8 @@ def check_vercel_masks_nested_pii_and_streams_by_level() -> None:
             "requested_amount": "5,000,000원",
         },
         "Authorization": f"Bearer {SECRET}",
-        "provider_error": f"openrouter_api={SECRET}",
+        "api_key": SECRET,
+        "provider_error": f"google_ai_studio={SECRET}",
     }
 
     with patch.dict(os.environ, {"VERCEL": "1"}, clear=False), TemporaryDirectory() as directory:
@@ -75,7 +76,8 @@ def check_local_keeps_pii_but_redacts_secrets() -> None:
         "scammer_text": f"{URL} {EMAIL} {PHONE} {ACCOUNT} {RESIDENT_ID}",
         "event_schema": {"account_number": ACCOUNT, "phone_number": PHONE, "url": URL},
         "Authorization": f"Bearer {SECRET}",
-        "provider_error": f"openrouter_api={SECRET}",
+        "api_key": SECRET,
+        "provider_error": f"google_ai_studio={SECRET}",
     }
 
     with patch.dict(os.environ, {}, clear=False):
