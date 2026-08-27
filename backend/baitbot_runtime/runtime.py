@@ -19,6 +19,8 @@ from datetime import timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
+from dotenv import load_dotenv
+
 try:  # Support both ``python test_runtime.py`` and package imports.
     from .event_log import log_event
     from .scenario_rag import ScenarioRAG
@@ -27,7 +29,11 @@ except ImportError:  # pragma: no cover - exercised by the standalone self-check
     from scenario_rag import ScenarioRAG
 
 
-DEFAULT_MODEL = "stealth/ox-alpha"
+DEFAULT_MODEL = "gemini-2.0-flash-lite"
+MODEL_ALIASES = {
+    "gemini-2.5-flash-lite": "gemini-2.0-flash-lite",
+    "gemini-2.5-flash-lite-preview": "gemini-2.0-flash-lite",
+}
 DEFAULT_REASONING = "low"
 ALLOWED_REASONING = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 MAX_MESSAGE_LENGTH = 4000
@@ -96,28 +102,6 @@ class LLMClient(Protocol):
         json_output: bool,
     ) -> Any:
         ...
-
-
-def _read_env_value(env_file: str | Path | None, key: str) -> str | None:
-    """Read one dotenv key without importing a dotenv package or printing values."""
-
-    if env_file is None:
-        env_path = Path(__file__).resolve().parents[3] / ".env"
-    else:
-        env_path = Path(env_file)
-    try:
-        lines = env_path.read_text(encoding="utf-8-sig").splitlines()
-    except (OSError, UnicodeError):
-        return None
-    for line in lines:
-        candidate = line.strip()
-        if not candidate or candidate.startswith("#"):
-            continue
-        candidate = re.sub(r"^export\s+", "", candidate)
-        name, separator, value = candidate.partition("=")
-        if separator and name.strip() == key:
-            return value.strip().strip('"').strip("'") or None
-    return None
 
 
 def _validate_model(model: str | None) -> str:
@@ -456,17 +440,15 @@ _SAFE_ERROR_CODES = frozenset(
     {
         "caller_failed",
         "extractor_failed",
-        "httpx_not_installed",
-        "openrouter_api_key_missing",
-        "openrouter_api_key_not_configured",
-        "openrouter_invalid_response",
-        "openrouter_request_failed",
+        "google_ai_studio_key_not_configured",
+        "gemini_invalid_response",
+        "gemini_request_failed",
         "provider_error",
         "responder_failed",
         "responder_output_blocked",
     }
 )
-_SAFE_HTTP_ERROR = re.compile(r"openrouter_http_\d{3}")
+_SAFE_HTTP_ERROR = re.compile(r"gemini_http_\d{3}")
 
 
 def _safe_error(error: BaseException) -> str:
@@ -492,10 +474,10 @@ def _decode_json(value: Any) -> Mapping[str, Any]:
     return decoded
 
 
-class OpenRouterClient:
-    """Small OpenRouter adapter; httpx is imported only when a real call is made."""
+class GoogleAIStudioClient:
+    """Small Google AI Studio Gemini adapter; httpx is loaded only for real calls."""
 
-    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    endpoint_template = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     def __init__(
         self,
@@ -547,7 +529,7 @@ class OpenRouterClient:
                 operation=operation,
                 status="retrying",
                 attempt=2,
-                cause="openrouter_http_429",
+                cause="gemini_http_429",
                 delay_ms=int(round(delay_seconds * 1000)),
             )
         except Exception:
@@ -563,47 +545,62 @@ class OpenRouterClient:
         json_output: bool,
     ) -> Any:
         if not self._api_key:
-            raise ProviderError("openrouter_api_key_not_configured")
+            raise ProviderError("google_ai_studio_key_not_configured")
         try:
             import httpx
         except ImportError as error:
-            raise ProviderError("httpx_not_installed") from error
+            raise ProviderError("gemini_request_failed") from error
 
+        del reasoning  # Gemini ignores the preserved reasoning UI/API field.
+        system_parts = [
+            {"text": message["content"]}
+            for message in messages
+            if message.get("role") == "system" and isinstance(message.get("content"), str)
+        ]
+        contents = [
+            {
+                "role": "model" if message.get("role") == "assistant" else "user",
+                "parts": [{"text": message["content"]}],
+            }
+            for message in messages
+            if message.get("role") != "system" and isinstance(message.get("content"), str)
+        ]
         payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
+            "contents": contents,
+            "generationConfig": {"temperature": 0.2},
         }
-        payload["reasoning"] = {"effort": reasoning}
+        if system_parts:
+            payload["systemInstruction"] = {"parts": system_parts}
         if json_output:
-            payload["response_format"] = {"type": "json_object"}
+            payload["generationConfig"]["responseMimeType"] = "application/json"
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "x-goog-api-key": self._api_key,
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://127.0.0.1:8000",
-            "X-Title": "Aegis Baitbot Runtime",
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-                response = await client.post(self.endpoint, headers=headers, json=payload)
+                resolved_model = MODEL_ALIASES.get(model, model)
+                endpoint = self.endpoint_template.format(model=resolved_model)
+                response = await client.post(endpoint, headers=headers, json=payload)
                 if response.status_code == 429:
                     delay_seconds = self._retry_delay_seconds(response)
                     self._log_retry(operation=operation, delay_seconds=delay_seconds)
                     await asyncio.sleep(delay_seconds)
-                    response = await client.post(self.endpoint, headers=headers, json=payload)
+                    response = await client.post(endpoint, headers=headers, json=payload)
         except Exception as error:  # httpx errors vary by transport and platform.
-            raise ProviderError("openrouter_request_failed") from error
+            raise ProviderError("gemini_request_failed") from error
         if response.status_code >= 400:
-            raise ProviderError(f"openrouter_http_{response.status_code}")
+            raise ProviderError(f"gemini_http_{response.status_code}")
         try:
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError) as error:
-            raise ProviderError("openrouter_invalid_response") from error
-        if isinstance(content, list):
+            parts = body["candidates"][0]["content"]["parts"]
             content = "".join(
-                part.get("text", "") for part in content if isinstance(part, Mapping)
+                part["text"] for part in parts if isinstance(part, Mapping) and isinstance(part.get("text"), str)
             )
+            if not content:
+                raise ValueError("missing response text")
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise ProviderError("gemini_invalid_response") from error
         return content
 
 
@@ -767,12 +764,22 @@ class BaitbotRuntime:
         scenario_rag: ScenarioRAG | None = None,
     ) -> None:
         self._event_logger = event_logger or log_event
-        self._uses_openrouter = client is None
-        api_key = (os.getenv("openrouter_api") or _read_env_value(env_file, "openrouter_api") or "").strip().strip('"').strip("'") or None
-        self._client: LLMClient = client or OpenRouterClient(api_key, event_logger=self._event_logger)
-        self.model = _validate_model(model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL)
+        self._uses_google_ai_studio = client is None
+        if env_file is not None:
+            load_dotenv(Path(env_file), override=False)
+        else:
+            load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+            load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+        api_key = (
+            os.getenv("google_ai_studio")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or ""
+        ).strip() or None
+        self._client: LLMClient = client or GoogleAIStudioClient(api_key, event_logger=self._event_logger)
+        self.model = _validate_model(model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL)
         self.reasoning = _validate_reasoning(
-            reasoning or os.getenv("OPENROUTER_REASONING_EFFORT") or DEFAULT_REASONING
+            reasoning or os.getenv("GEMINI_REASONING_EFFORT") or DEFAULT_REASONING
         )
         self._scenario_rag = scenario_rag or ScenarioRAG()
         self._lock = asyncio.Lock()
@@ -783,7 +790,7 @@ class BaitbotRuntime:
 
     @property
     def key_configured(self) -> bool:
-        return bool(self._uses_openrouter and getattr(self._client, "_api_key", None)) or not self._uses_openrouter
+        return bool(self._uses_google_ai_studio and getattr(self._client, "_api_key", None)) or not self._uses_google_ai_studio
 
     def config(self) -> dict[str, Any]:
         health = self._scenario_rag.health()
