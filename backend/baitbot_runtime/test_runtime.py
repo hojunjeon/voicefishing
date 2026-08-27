@@ -16,7 +16,7 @@ from runtime import (
     DEFAULT_MODEL,
     MAX_SNAPSHOT_BYTES,
     BaitbotRuntime,
-    OpenRouterClient,
+    GoogleAIStudioClient,
     ProviderError,
     _safe_error,
     evaluate_safety,
@@ -112,7 +112,12 @@ class FakeHTTPResponse:
         self._content = content
 
     def json(self) -> dict:
-        return {"choices": [{"message": {"content": self._content}}]}
+        return {"candidates": [{"content": {"parts": [{"text": self._content}]}}]}
+
+
+class InvalidHTTPResponse(FakeHTTPResponse):
+    def json(self) -> dict:
+        return {}
 
 
 class SequenceHTTPClient:
@@ -133,7 +138,7 @@ class SequenceHTTPClient:
         return response
 
 
-async def check_openrouter_retry_behavior() -> None:
+async def check_gemini_retry_behavior() -> None:
     import httpx
 
     async def run_case(responses: list[FakeHTTPResponse]):
@@ -147,7 +152,7 @@ async def check_openrouter_retry_behavior() -> None:
 
             with patch.object(httpx, "AsyncClient", lambda *args, **kwargs: transport):
                 with patch.object(asyncio, "sleep", fake_sleep):
-                    client = OpenRouterClient("unit-test-key", event_logger=logger.log_event)
+                    client = GoogleAIStudioClient("unit-test-key", event_logger=logger.log_event)
                     try:
                         value = await client.complete(
                             operation="extractor",
@@ -173,14 +178,14 @@ async def check_openrouter_retry_behavior() -> None:
     assert retry_records[0]["operation"] == "extractor"
     assert retry_records[0]["details"] == {
         "attempt": 2,
-        "cause": "openrouter_http_429",
+        "cause": "gemini_http_429",
         "delay_ms": 2000,
     }
 
     value, calls, sleeps, records = await run_case(
         [FakeHTTPResponse(429), FakeHTTPResponse(429, headers={"Retry-After": "1"})]
     )
-    assert isinstance(value, ProviderError) and str(value) == "openrouter_http_429"
+    assert isinstance(value, ProviderError) and str(value) == "gemini_http_429"
     assert calls == 2
     assert sleeps == [0.5]
     assert len([record for record in records if record["event"] == "provider.retry"]) == 1
@@ -188,8 +193,14 @@ async def check_openrouter_retry_behavior() -> None:
     value, calls, sleeps, records = await run_case(
         [FakeHTTPResponse(400), FakeHTTPResponse(200)]
     )
-    assert isinstance(value, ProviderError) and str(value) == "openrouter_http_400"
+    assert isinstance(value, ProviderError) and str(value) == "gemini_http_400"
     assert calls == 1, "non-429 responses must not be retried"
+    assert sleeps == []
+    assert not any(record["event"] == "provider.retry" for record in records)
+
+    value, calls, sleeps, records = await run_case([InvalidHTTPResponse(200)])
+    assert isinstance(value, ProviderError) and str(value) == "gemini_invalid_response"
+    assert calls == 1
     assert sleeps == []
     assert not any(record["event"] == "provider.retry" for record in records)
 
@@ -352,7 +363,7 @@ async def check_session_snapshot_continuity(event_logger: JsonlEventLogger) -> N
         raise AssertionError("oversize snapshots must be rejected")
 
 
-async def check_none_reasoning_payload() -> None:
+async def check_gemini_payload_contract() -> None:
     import httpx
 
     recorded: dict[str, object] = {}
@@ -361,7 +372,7 @@ async def check_none_reasoning_payload() -> None:
         status_code = 200
 
         def json(self):
-            return {"choices": [{"message": {"content": "{}"}}]}
+            return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
 
     class FakeHTTPClient:
         def __init__(self, *args, **kwargs):
@@ -374,23 +385,80 @@ async def check_none_reasoning_payload() -> None:
             del args
 
         async def post(self, endpoint, *, headers, json):
-            del endpoint, headers
+            recorded["endpoint"] = endpoint
+            recorded["headers"] = headers
             recorded["payload"] = json
             return FakeResponse()
 
     with patch.object(httpx, "AsyncClient", FakeHTTPClient):
-        await OpenRouterClient("unit-test-key").complete(
+        await GoogleAIStudioClient("unit-test-key").complete(
             operation="responder",
-            messages=[],
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "user"},
+            ],
             model="test/model",
             reasoning="none",
             json_output=True,
         )
-    assert recorded["payload"]["reasoning"] == {"effort": "none"}
+    payload = recorded["payload"]
+    assert recorded["endpoint"] == "https://generativelanguage.googleapis.com/v1beta/models/test/model:generateContent"
+    assert recorded["headers"]["x-goog-api-key"] == "unit-test-key"
+    assert "unit-test-key" not in json.dumps(payload)
+    assert payload["systemInstruction"]["parts"] == [{"text": "system"}]
+    assert payload["contents"] == [{"role": "user", "parts": [{"text": "user"}]}]
+    assert payload["generationConfig"]["responseMimeType"] == "application/json"
+    assert "reasoning" not in payload
+    assert "thinkingConfig" not in payload
+
+
+async def check_missing_gemini_key_error() -> None:
+    import runtime as runtime_module
+
+    with patch.object(runtime_module, "load_dotenv"):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("google_ai_studio", None)
+            runtime = BaitbotRuntime(event_logger=lambda *args, **kwargs: None)
+            assert runtime.key_configured is False
+            result = await runtime.process("안전계좌로 송금하라고 요구했습니다.")
+    assert result["errors"] == [
+        "responder: google_ai_studio_key_not_configured",
+        "extractor: google_ai_studio_key_not_configured",
+    ]
+
+
+def check_dotenv_loading_and_precedence() -> None:
+    import runtime as runtime_module
+
+    with TemporaryDirectory() as temporary_directory:
+        env_file = Path(temporary_directory) / "settings.env"
+        env_file.write_text(
+            "google_ai_studio=file-key\nGEMINI_MODEL=file-model\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("google_ai_studio", None)
+            os.environ.pop("GEMINI_MODEL", None)
+            loaded = BaitbotRuntime(client=FakeClient(), env_file=env_file)
+            assert loaded.model == "file-model"
+
+        with patch.dict(os.environ, {"google_ai_studio": "env-key"}, clear=False):
+            kept = BaitbotRuntime(client=FakeClient(), env_file=env_file)
+            assert os.getenv("google_ai_studio") == "env-key"
+            assert kept.model == "file-model"
+
+    with patch.object(runtime_module, "load_dotenv") as load:
+        with patch.dict(os.environ, {"google_ai_studio": "env-key"}, clear=False):
+            BaitbotRuntime(client=FakeClient())
+        called_paths = [call.args[0] for call in load.call_args_list]
+        assert Path(__file__).resolve().parents[3] / ".env" in called_paths
+        assert Path(__file__).resolve().parents[2] / ".env" in called_paths
 
 
 def check_html_reasoning_default() -> None:
     html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'value="gemini-2.0-flash-lite"' in html
+    assert "const DEFAULT_MODEL = 'gemini-2.0-flash-lite';" in html
     assert '<option value="low" selected>low</option>' in html
     assert "if (ALLOWED_REASONING.includes(config.reasoning)) reasoningInput.value = config.reasoning;" in html
 
@@ -424,7 +492,7 @@ def check_api_boundary() -> None:
                 assert chat.status_code == 200
                 response = chat.json()
                 assert response["turn_id"] == "turn_0001"
-                assert "openrouter_api" not in json.dumps(response).lower()
+                assert "google_ai_studio" not in json.dumps(response).lower()
                 assert "authorization" not in json.dumps(response).lower()
 
                 api_secret = "sk-api-test-secret"
@@ -477,7 +545,7 @@ async def main() -> None:
         try:
             fake = FakeClient()
             runtime = BaitbotRuntime(client=fake, event_logger=logger.log_event)
-            assert DEFAULT_MODEL == "stealth/ox-alpha"
+            assert DEFAULT_MODEL == "gemini-2.0-flash-lite"
             assert runtime.model == DEFAULT_MODEL
             result = await runtime.process("안전계좌로 5백만 원을 보내세요.")
             assert set(fake.calls) == {"responder", "extractor"}, "PASS must call both agents"
@@ -623,7 +691,7 @@ async def main() -> None:
             assert secret_marker not in json.dumps(secret_failure, ensure_ascii=False)
             assert "bearer" not in json.dumps(secret_failure, ensure_ascii=False).lower()
             assert secret_failure["errors"] == ["responder: provider_error"]
-            assert _safe_error(ProviderError("openrouter_http_400")) == "openrouter_http_400"
+            assert _safe_error(ProviderError("gemini_http_400")) == "gemini_http_400"
             assert _safe_error(RuntimeError(f"Bearer {secret_marker}")) == "provider_error"
 
             both_failing = BaitbotRuntime(
@@ -645,14 +713,16 @@ async def main() -> None:
 
             await check_reset_serialization(logger)
             await check_session_snapshot_continuity(logger)
-            await check_openrouter_retry_behavior()
+            await check_gemini_retry_behavior()
             await check_error_log_levels()
-            await check_none_reasoning_payload()
+            await check_gemini_payload_contract()
+            await check_missing_gemini_key_error()
+            check_dotenv_loading_and_precedence()
             check_html_reasoning_default()
 
             logger.log_event(
                 "redaction.check",
-                openrouter_api="do-not-log-key",
+                google_ai_studio="do-not-log-key",
                 details={"Authorization": "Bearer do-not-log-token", "inline": "token=do-not-log-inline"},
             )
             records = read_records(logger)
