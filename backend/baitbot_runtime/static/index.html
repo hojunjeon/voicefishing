@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%233269a8'/%3E%3Cpath d='M8 16h16M16 8v16' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
-  <title>미끼봇 런타임</title>
+  <title>미끼봇 통화 시나리오 4</title>
   <style>
     :root { font-family: system-ui, sans-serif; color: #17202a; background: #f7f7f7; }
     body { margin: 0; }
@@ -16,19 +16,35 @@
     label { display: block; font-weight: 600; margin-bottom: .25rem; }
     input, select, textarea, button { box-sizing: border-box; font: inherit; }
     input, select, textarea { border: 1px solid #aeb8c2; border-radius: 4px; padding: .5rem; width: 100%; }
+    input[type="checkbox"] { height: 1.25rem; margin: 0; width: 1.25rem; }
     textarea { min-height: 5rem; resize: vertical; }
-    button { border: 1px solid #59636e; border-radius: 4px; background: #eef1f4; cursor: pointer; padding: .5rem .75rem; }
-    button:disabled { cursor: wait; opacity: .55; }
+    button { border: 1px solid #59636e; border-radius: 4px; background: #eef1f4; cursor: pointer; min-height: 44px; padding: .5rem .75rem; }
+    button:not(:disabled):active { background: #dce2e8; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #3269a8; outline-offset: 2px; }
     .fields { display: grid; gap: .75rem; grid-template-columns: 2fr 1fr; margin-bottom: .75rem; }
     .actions { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem; }
+    .tts-control { align-items: center; display: inline-flex; gap: .45rem; margin: 0; }
+    .mode-actions { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mode-button { font-weight: 700; text-align: left; }
+    .mode-button[aria-pressed="true"] { background: #dcecff; border-color: #3269a8; }
     .status-grid, .timing-grid { display: grid; gap: .5rem 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
     .status-grid dt, .timing-grid dt { color: #5b6570; font-size: .8rem; }
     .status-grid dd, .timing-grid dd { font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+    .suspicion { border-top: 1px solid #d8dee4; margin-top: 1rem; padding-top: 1rem; }
+    .suspicion p { margin: .35rem 0 0; }
+    .suspicion-row { align-items: center; display: flex; gap: .75rem; }
+    progress { flex: 1 1 12rem; height: 1.25rem; }
+    output { font-weight: 700; min-width: 3.5rem; }
     .conversation { list-style: none; margin: 0 0 1rem; max-height: 420px; min-height: 8rem; overflow: auto; padding: 0; }
     .message { border: 1px solid #d8dee4; border-radius: 4px; margin: .5rem 0; padding: .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     .message strong { display: block; font-size: .8rem; margin-bottom: .3rem; }
-    .message.scammer { background: #fff8e6; }
+    .message.caller { background: #fff8e6; }
+    .message.user { background: #edf3ff; }
     .message.baitbot { background: #edf7ee; }
+    .handoff-progress { margin: .75rem 0; }
+    .handoff-action { background: #fff8e6; border: 2px solid #d69e2e; border-radius: 6px; padding: .75rem; }
+    .handoff-button { background: #fff0b8; border-color: #9a6700; font-weight: 700; width: 100%; }
     pre { background: #f4f6f8; border: 1px solid #d8dee4; border-radius: 4px; margin: 0; max-height: 300px; overflow: auto; padding: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     .event-summary { display: grid; gap: .5rem 1rem; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 .75rem; }
     .event-summary dt { color: #5b6570; font-size: .8rem; }
@@ -52,20 +68,24 @@
     .error { background: #fff0f0; border: 1px solid #d66; border-radius: 4px; color: #8b0000; margin-bottom: 1rem; padding: .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     .muted { color: #5b6570; }
     @media (max-width: 680px) {
-      .fields, .panels, .status-grid, .timing-grid, .event-summary { grid-template-columns: 1fr; }
+      .fields, .mode-actions, .panels, .status-grid, .timing-grid, .event-summary { grid-template-columns: 1fr; }
+      main { padding: .75rem; }
+      .suspicion-row { align-items: stretch; flex-direction: column; gap: .35rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
   <main>
-    <h1>미끼봇 런타임</h1>
+    <h1>미끼봇 · 시나리오 4</h1>
     <p id="config-status" class="notice" role="status" aria-live="polite">서버 설정을 불러오는 중입니다.</p>
     <aside class="notice demo-notice" role="note" aria-labelledby="demo-notice-title">
       <h2 id="demo-notice-title">데모·개인정보 안내</h2>
       <ul>
-        <li>이 공개 버전은 브라우저가 세션 상태를 다음 요청에 전달하는 데모입니다. 새로고침·새 탭·새 세션에서는 대화가 초기화될 수 있습니다.</li>
-        <li>실제 주민번호·계좌번호·전화번호·비밀번호 등 개인정보·금융정보는 입력하지 마세요.</li>
-        <li>서버 로그에는 Production 마스킹이 적용되지만, 테스트에는 민감하지 않은 예시 문구만 사용하세요.</li>
+        <li>알 수 없는 발신자와의 대화를 재현하는 데모입니다. 실제 개인정보나 금융정보는 입력하지 마세요.</li>
+        <li>대화와 추출 정보는 데모 환경의 서버 정책에 따라 처리됩니다. 민감한 실제 문구 대신 예시 문구를 사용하세요.</li>
       </ul>
     </aside>
 
@@ -73,12 +93,12 @@
       <h2 id="settings-title">런타임 설정</h2>
       <div class="fields">
         <div>
-          <label for="model-input">Responder/Extractor 모델</label>
-          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="stealth/ox-alpha">
+          <label for="model-input">사기범/Responder/Extractor 공용 모델</label>
+          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="stealth/ox-alpha" disabled>
         </div>
         <div>
           <label for="reasoning-input">추론 수준</label>
-          <select id="reasoning-input">
+          <select id="reasoning-input" disabled>
             <option value="none">none</option>
             <option value="minimal">minimal</option>
             <option value="low" selected>low</option>
@@ -91,9 +111,24 @@
         </div>
       </div>
       <div class="actions">
-        <button id="reset-button" type="button">새 세션</button>
-        <span id="request-status" class="muted" role="status" aria-live="polite">대기 중</span>
+        <label class="tts-control" for="tts-input">
+          <input id="tts-input" type="checkbox" checked disabled>
+          음성 안내(TTS)
+        </label>
+        <span id="tts-support" class="muted" role="status" aria-live="polite">음성 안내를 확인하는 중입니다.</span>
+        <button id="reset-button" type="button" disabled>새 세션</button>
+        <span id="request-status" class="muted" role="status" aria-live="polite">준비 중</span>
       </div>
+    </section>
+
+    <section aria-labelledby="start-title">
+      <h2 id="start-title">알 수 없는 번호의 발신자</h2>
+      <p class="muted">모드를 선택하면 LLM 발신자가 먼저 대화를 시작합니다.</p>
+      <div class="mode-actions">
+        <button id="start-scammer-button" class="mode-button" type="button" aria-pressed="false" disabled>4-1 사기범 모드 시작</button>
+        <button id="start-normal-button" class="mode-button" type="button" aria-pressed="false" disabled>4-2 일반인 모드 시작</button>
+      </div>
+      <p id="mode-status" class="muted" role="status" aria-live="polite">시작 모드를 선택하세요.</p>
     </section>
 
     <section aria-labelledby="state-title">
@@ -104,22 +139,36 @@
         <div><dt>safety</dt><dd id="safety-state">-</dd></div>
         <div><dt>turn</dt><dd id="turn-state">0</dd></div>
       </dl>
+      <div class="suspicion">
+        <label for="suspicion-progress">사기범 가능성</label>
+        <div class="suspicion-row">
+          <progress id="suspicion-progress" max="100" value="0" aria-describedby="suspicion-description suspicion-announcement" aria-valuetext="사기범 가능성 0%">0%</progress>
+          <output id="suspicion-percent" for="suspicion-progress">0%</output>
+        </div>
+        <p id="suspicion-description" class="muted">RAG 대화 유사도로 계산한 사기범 가능성입니다.</p>
+        <p id="suspicion-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">사기범 가능성 0%</p>
+      </div>
     </section>
 
     <div id="error-area" class="error" role="alert" hidden></div>
     <div id="partial-area" class="notice" role="status" aria-live="polite" hidden></div>
 
     <section aria-labelledby="conversation-title">
-      <h2 id="conversation-title">대화</h2>
-      <ol id="conversation-list" class="conversation" aria-live="polite" aria-label="사기범과 미끼봇 대화"></ol>
-      <form id="scammer-form">
-        <label for="scammer-input">사기범 대사</label>
-        <textarea id="scammer-input" placeholder="사기범의 대사를 입력하세요. Enter로 전송하고 Shift+Enter로 줄바꿈합니다."></textarea>
+      <h2 id="conversation-title">통화 대화</h2>
+      <ol id="conversation-list" class="conversation" role="log" aria-live="polite" aria-label="발신자와의 대화"></ol>
+      <form id="conversation-form">
+        <label for="caller-input">내 대사</label>
+        <textarea id="caller-input" placeholder="내 대사를 입력하세요. Enter로 전송하고 Shift+Enter로 줄바꿈합니다." disabled></textarea>
         <div class="actions">
           <button id="send-button" type="submit" disabled>전송</button>
           <span class="muted">Enter 전송 · Shift+Enter 줄바꿈</span>
         </div>
       </form>
+      <p id="handoff-progress" class="handoff-progress muted" role="status" aria-live="polite" aria-atomic="true">미끼봇 전환 0/5 대기 중</p>
+      <div id="handoff-action" class="handoff-action" hidden>
+        <button id="handoff-button" class="handoff-button" type="button" disabled hidden>사기범 가능성 80% 이상 · 미끼봇으로 전환</button>
+      </div>
+      <p id="handoff-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
     </section>
 
     <div class="panels">
@@ -175,25 +224,8 @@
       'use strict';
 
       const DEFAULT_MODEL = 'stealth/ox-alpha';
+      const MAX_BAITBOT_TURNS = 5;
       const ALLOWED_REASONING = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-      const modelInput = document.getElementById('model-input');
-      const reasoningInput = document.getElementById('reasoning-input');
-      const scammerInput = document.getElementById('scammer-input');
-      const sendButton = document.getElementById('send-button');
-      const resetButton = document.getElementById('reset-button');
-      const form = document.getElementById('scammer-form');
-      const conversationList = document.getElementById('conversation-list');
-      const configStatus = document.getElementById('config-status');
-      const requestStatus = document.getElementById('request-status');
-      const errorArea = document.getElementById('error-area');
-      const partialArea = document.getElementById('partial-area');
-      const eventSchemaStatus = document.getElementById('event-schema-status');
-      const eventExtractionStatus = document.getElementById('event-extraction-status');
-      const eventExtractedCount = document.getElementById('event-extracted-count');
-      const eventSchemaAnnouncement = document.getElementById('event-schema-announcement');
-      const eventSchemaBody = document.getElementById('event-schema-body');
-      const scenarioRagStatus = document.getElementById('scenario-rag-status');
-      const scenarioRagResults = document.getElementById('scenario-rag-results');
       const EVENT_SCHEMA_FIELDS = [
         { key: 'impersonated_org', label: '사칭 기관' },
         { key: 'requested_amount', label: '요구 금액' },
@@ -205,16 +237,70 @@
         { key: 'threat', label: '협박/압박' }
       ];
       const NOT_EXTRACTED = '미추출';
+      const INVALID_SCENARIO_ID = '서버 응답의 scenario_id가 없거나 현재 세션과 일치하지 않습니다. 새 세션을 시작하세요.';
       const SESSION_SNAPSHOT_FIELDS = ['session_id', 'turn_seq', 'conversation', 'event_schema', 'attack_events'];
+      const SPEECH_SUPPORTED = Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance);
+
+      const modelInput = document.getElementById('model-input');
+      const reasoningInput = document.getElementById('reasoning-input');
+      const ttsInput = document.getElementById('tts-input');
+      const ttsSupport = document.getElementById('tts-support');
+      const resetButton = document.getElementById('reset-button');
+      const startScammerButton = document.getElementById('start-scammer-button');
+      const startNormalButton = document.getElementById('start-normal-button');
+      const modeStatus = document.getElementById('mode-status');
+      const callerInput = document.getElementById('caller-input');
+      const sendButton = document.getElementById('send-button');
+      const form = document.getElementById('conversation-form');
+      const conversationList = document.getElementById('conversation-list');
+      const suspicionProgress = document.getElementById('suspicion-progress');
+      const suspicionPercentOutput = document.getElementById('suspicion-percent');
+      const suspicionAnnouncement = document.getElementById('suspicion-announcement');
+      const handoffAction = document.getElementById('handoff-action');
+      const handoffButton = document.getElementById('handoff-button');
+      const handoffProgress = document.getElementById('handoff-progress');
+      const handoffAnnouncement = document.getElementById('handoff-announcement');
+      const configStatus = document.getElementById('config-status');
+      const requestStatus = document.getElementById('request-status');
+      const errorArea = document.getElementById('error-area');
+      const partialArea = document.getElementById('partial-area');
+      const eventSchemaStatus = document.getElementById('event-schema-status');
+      const eventExtractionStatus = document.getElementById('event-extraction-status');
+      const eventExtractedCount = document.getElementById('event-extracted-count');
+      const eventSchemaAnnouncement = document.getElementById('event-schema-announcement');
+      const eventSchemaBody = document.getElementById('event-schema-body');
+      const attackEvents = document.getElementById('attack-events');
+      const scenarioRagStatus = document.getElementById('scenario-rag-status');
+      const scenarioRagResults = document.getElementById('scenario-rag-results');
+
       let busy = false;
       let initialized = false;
+      let mode = null;
+      let scenarioId = null;
+      let conversation = [];
       let sessionSnapshot = null;
+      let baitbotTurn = 0;
+      let handoffInProgress = false;
+      let handoffEnded = false;
+      let handoffAllowedByServer = false;
+      let handoffVisible = false;
+      let suspicionPercent = 0;
+
+      function isRecord(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+      }
+
+      function hasOwn(value, key) {
+        return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key);
+      }
 
       function jsonText(value, emptyText) {
-        if (value === undefined || value === null || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)) {
-          return emptyText;
+        if (value === undefined || value === null || (isRecord(value) && Object.keys(value).length === 0)) return emptyText;
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch (_) {
+          return String(value);
         }
-        try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
       }
 
       function setText(id, value) {
@@ -241,44 +327,64 @@
         errorArea.textContent = message || '요청 처리 중 오류가 발생했습니다.';
       }
 
-      function messageValue(entry) {
-        if (entry === null || entry === undefined) return '';
-        if (typeof entry === 'string') return entry;
-        return entry.message ?? entry.content ?? entry.text ?? '';
+      function normalizeConversation(value) {
+        if (!Array.isArray(value)) return [];
+        return value
+          .filter((entry) => isRecord(entry) && typeof entry.speaker === 'string' && typeof entry.text === 'string')
+          .map(({ speaker, text }) => ({ speaker, text }));
       }
 
-      function roleValue(entry) {
-        if (!entry || typeof entry !== 'object') return 'unknown';
-        return String(entry.role ?? entry.speaker ?? 'unknown').toLowerCase();
+      function callerLabel() {
+        return mode === 'NORMAL' ? '일반인' : '사기범';
       }
 
-      function addMessage(role, text, turn) {
-        if (!text) return;
+      function labelForSpeaker(speaker) {
+        if (speaker === 'USER') return '나';
+        if (speaker === 'BAITBOT') return '미끼봇';
+        return callerLabel();
+      }
+
+      function addMessage(entry) {
         const item = document.createElement('li');
-        item.className = role === 'scammer' || role === 'user' || role === 'suspect' ? 'message scammer' : 'message baitbot';
+        item.className = 'message ' + (entry.speaker === 'USER' ? 'user' : entry.speaker === 'BAITBOT' ? 'baitbot' : 'caller');
         const label = document.createElement('strong');
-        label.textContent = role === 'scammer' || role === 'user' || role === 'suspect' ? '사기범' : '미끼봇';
-        if (turn !== undefined && turn !== null) label.textContent += ` · turn ${turn}`;
+        label.textContent = labelForSpeaker(entry.speaker);
         const body = document.createElement('span');
-        body.textContent = text;
+        body.textContent = entry.text;
         item.append(label, body);
         conversationList.append(item);
       }
 
-      function renderConversation(conversation) {
+      function renderConversation() {
         conversationList.replaceChildren();
-        if (!Array.isArray(conversation)) return;
-        conversation.forEach((entry) => addMessage(roleValue(entry), messageValue(entry), entry && entry.turn_seq));
+        conversation.forEach(addMessage);
+        conversationList.setAttribute('aria-label', callerLabel() + '과 나, 미끼봇의 대화');
+        conversationList.scrollTop = conversationList.scrollHeight;
       }
 
-      function renderChatFallback(data) {
-        addMessage('scammer', data.scammer_message, data.turn_seq);
-        addMessage('baitbot', data.baitbot_message, data.turn_seq);
+      function sameConversationEntry(left, right) {
+        return left.speaker === right.speaker && left.text === right.text;
+      }
+
+      function conversationAdditions(next) {
+        if (next.length < conversation.length || !conversation.every((entry, index) => sameConversationEntry(entry, next[index]))) return [];
+        return next.slice(conversation.length);
+      }
+
+      function replaceConversation(value) {
+        if (!Array.isArray(value)) return [];
+        const next = normalizeConversation(value);
+        const additions = conversationAdditions(next);
+        conversation = next;
+        renderConversation();
+        return additions;
       }
 
       function timingValue(timings, names) {
-        if (!timings || typeof timings !== 'object') return '-';
-        for (const name of names) if (timings[name] !== undefined && timings[name] !== null) return `${timings[name]} ms`;
+        if (!isRecord(timings)) return '-';
+        for (const name of names) {
+          if (timings[name] !== undefined && timings[name] !== null) return String(timings[name]) + ' ms';
+        }
         return '-';
       }
 
@@ -286,15 +392,23 @@
         setText('responder-time', timingValue(timings, ['responder_ms', 'responder', 'responder_latency_ms']));
         setText('extractor-time', timingValue(timings, ['extractor_ms', 'extractor', 'extractor_latency_ms']));
         setText('total-time', timingValue(timings, ['total_ms', 'total', 'elapsed_ms']));
-        setText('timing-errors', errors && ((Array.isArray(errors) && errors.length) || (typeof errors === 'object' && Object.keys(errors).length)) ? '있음' : '없음');
+        const hasErrors = Boolean(errors && ((Array.isArray(errors) && errors.length) || (isRecord(errors) && Object.keys(errors).length)));
+        setText('timing-errors', hasErrors ? '있음' : '없음');
       }
 
       function renderErrors(errors) {
-        if (errors === undefined || errors === null || (Array.isArray(errors) && errors.length === 0) || (typeof errors === 'object' && !Array.isArray(errors) && Object.keys(errors).length === 0)) return;
-        const text = jsonText(errors, '부분 실패');
-        showError(`부분 실패 또는 오류\n${text}`);
+        if (errors === undefined || errors === null || (Array.isArray(errors) && errors.length === 0) || (isRecord(errors) && Object.keys(errors).length === 0)) return;
+        showError('부분 실패 또는 오류\n' + jsonText(errors, '부분 실패'));
         partialArea.hidden = false;
         partialArea.textContent = 'Responder/Extractor 중 일부 처리가 실패했습니다. 표시된 결과는 부분 결과일 수 있습니다.';
+      }
+
+      function clearScenarioRag() {
+        scenarioRagStatus.textContent = '검색 전';
+        scenarioRagResults.replaceChildren();
+        const empty = document.createElement('li');
+        empty.textContent = '검색 결과 없음';
+        scenarioRagResults.append(empty);
       }
 
       function renderScenarioRag(payload) {
@@ -311,21 +425,19 @@
         }
         results.forEach((result) => {
           const item = document.createElement('li');
-          const title = result && result.title ? String(result.title) : '이름 없는 문서';
-          const score = result && result.score !== undefined ? ` · ${result.score}` : '';
-          item.textContent = `${title}${score}${result && result.is_benign ? ' · 정상 대조' : ''}`;
+          const title = isRecord(result) && result.title ? String(result.title) : '이름 없는 문서';
+          const score = isRecord(result) && result.score !== undefined ? ' · ' + String(result.score) : '';
+          const benign = isRecord(result) && result.is_benign ? ' · 정상 참고' : '';
+          item.textContent = title + score + benign;
           scenarioRagResults.append(item);
         });
       }
 
-      function isRecord(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-      }
-
       function snapshotFromPayload(data) {
-        if (!isRecord(data) || !SESSION_SNAPSHOT_FIELDS.every((key) => Object.prototype.hasOwnProperty.call(data, key))) return null;
+        const candidate = isRecord(data) && isRecord(data.session_snapshot) ? data.session_snapshot : data;
+        if (!isRecord(candidate) || !SESSION_SNAPSHOT_FIELDS.every((key) => hasOwn(candidate, key))) return null;
         try {
-          return JSON.parse(JSON.stringify(Object.fromEntries(SESSION_SNAPSHOT_FIELDS.map((key) => [key, data[key]]))));
+          return JSON.parse(JSON.stringify(Object.fromEntries(SESSION_SNAPSHOT_FIELDS.map((key) => [key, candidate[key]]))));
         } catch (_) {
           return null;
         }
@@ -359,7 +471,7 @@
       function createEvidenceCell(entry) {
         const cell = document.createElement('td');
         const evidence = isRecord(entry) && Array.isArray(entry.evidence_turn_ids)
-          ? [...new Set(entry.evidence_turn_ids.filter((turnId) => hasValue(turnId)).map(String))]
+          ? [...new Set(entry.evidence_turn_ids.filter(hasValue).map(String))]
           : [];
         if (!evidence.length) {
           cell.textContent = NOT_EXTRACTED;
@@ -381,21 +493,19 @@
         const confidence = eventEntryValue(entry, 'confidence');
         const number = Number(confidence);
         if (!extracted || !hasValue(confidence) || !Number.isFinite(number)) return NOT_EXTRACTED;
-        return `${Math.round(Math.max(0, Math.min(1, number)) * 100)}%`;
+        return String(Math.round(Math.max(0, Math.min(1, number)) * 100)) + '%';
       }
 
       function schemaSummaryValue(schema, key, defaultValue) {
-        return Object.prototype.hasOwnProperty.call(schema, key)
-          ? displayValue(schema[key])
-          : defaultValue;
+        return hasOwn(schema, key) ? displayValue(schema[key]) : defaultValue;
       }
 
       function renderEventSchema(eventSchema) {
         const schema = isRecord(eventSchema) ? eventSchema : {};
         let extractedCount = 0;
         eventSchemaBody.replaceChildren();
-        EVENT_SCHEMA_FIELDS.forEach(({ key, label }) => {
-          const entry = schema[key];
+        EVENT_SCHEMA_FIELDS.forEach((fieldData) => {
+          const entry = schema[fieldData.key];
           const extractedValue = eventEntryValue(entry, 'value');
           const extracted = hasValue(extractedValue);
           if (extracted) extractedCount += 1;
@@ -403,7 +513,7 @@
           const row = document.createElement('tr');
           const field = document.createElement('th');
           field.scope = 'row';
-          field.textContent = label;
+          field.textContent = fieldData.label;
           const extractionStatus = document.createElement('td');
           extractionStatus.textContent = extracted ? '추출됨' : NOT_EXTRACTED;
           if (!extracted) extractionStatus.classList.add('empty-value');
@@ -426,36 +536,141 @@
         const extractionStatus = schemaSummaryValue(schema, 'extraction_status', 'IDLE');
         eventSchemaStatus.textContent = schemaStatus;
         eventExtractionStatus.textContent = extractionStatus;
-        eventExtractedCount.textContent = `${extractedCount}/${EVENT_SCHEMA_FIELDS.length} 추출`;
-        eventSchemaAnnouncement.textContent = `이벤트 추출 상태: ${schemaStatus}, ${extractionStatus}. ${extractedCount}/${EVENT_SCHEMA_FIELDS.length}개 항목이 추출되었습니다.`;
+        eventExtractedCount.textContent = String(extractedCount) + '/' + String(EVENT_SCHEMA_FIELDS.length) + ' 추출';
+        eventSchemaAnnouncement.textContent = '이벤트 추출 상태: ' + schemaStatus + ', ' + extractionStatus + '. ' + String(extractedCount) + '/' + String(EVENT_SCHEMA_FIELDS.length) + '개 항목이 추출되었습니다.';
       }
 
-      function applyChatResponse(data) {
-        rememberSessionSnapshot(data);
-        if (data.model) modelInput.value = data.model;
-        if (ALLOWED_REASONING.includes(data.reasoning)) reasoningInput.value = data.reasoning;
-        setRuntimeState(data);
-        if (Array.isArray(data.conversation)) renderConversation(data.conversation);
-        else renderChatFallback(data);
-        renderEventSchema(data.event_schema);
-        document.getElementById('attack-events').textContent = jsonText(data.attack_events, '공격 이벤트 없음');
-        renderScenarioRag(data.scenario_rag);
-        renderTimings(data.timings_ms, data.errors);
-        renderErrors(data.errors);
+      function normalizeSuspicion(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.round(Math.max(0, Math.min(100, number))) : 0;
       }
 
-      function setBusy(value) {
+      function canStartHandoff() {
+        return Boolean(mode) && Boolean(scenarioId) && suspicionPercent >= 80 && handoffAllowedByServer && !handoffEnded;
+      }
+
+      function renderHandoffControl() {
+        const available = canStartHandoff();
+        handoffAction.hidden = !available;
+        handoffButton.hidden = !available;
+        handoffButton.disabled = !available || busy || handoffInProgress;
+        if (available && !handoffVisible) {
+          handoffAnnouncement.textContent = '사기범 가능성 80% 이상입니다. 미끼봇 전환 버튼을 사용할 수 있습니다.';
+        } else if (!available && handoffVisible) {
+          handoffAnnouncement.textContent = '';
+        }
+        handoffVisible = available;
+      }
+
+      function renderHandoffProgress(turn, state) {
+        handoffProgress.textContent = '미끼봇 전환 ' + String(turn) + '/' + String(MAX_BAITBOT_TURNS) + ' ' + state;
+      }
+
+      function updateSuspicion(value, availability) {
+        suspicionPercent = normalizeSuspicion(value);
+        if (typeof availability === 'boolean') handoffAllowedByServer = availability;
+        const text = '사기범 가능성 ' + String(suspicionPercent) + '%';
+        suspicionProgress.value = suspicionPercent;
+        suspicionProgress.setAttribute('aria-valuetext', text);
+        suspicionPercentOutput.textContent = String(suspicionPercent) + '%';
+        suspicionAnnouncement.textContent = text + '. RAG 대화 유사도 기준입니다.';
+        renderHandoffControl();
+      }
+
+      function renderModeStatus() {
+        if (!mode) {
+          modeStatus.textContent = '시작 모드를 선택하세요.';
+          return;
+        }
+        modeStatus.textContent = mode === 'SCAMMER' ? '사기범 모드가 선택되었습니다.' : '일반인 모드가 선택되었습니다.';
+      }
+
+      function syncControls() {
+        const ready = initialized && !busy;
+        startScammerButton.disabled = !ready;
+        startNormalButton.disabled = !ready;
+        startScammerButton.setAttribute('aria-pressed', String(mode === 'SCAMMER'));
+        startNormalButton.setAttribute('aria-pressed', String(mode === 'NORMAL'));
+        resetButton.disabled = !ready;
+        modelInput.disabled = !ready || Boolean(mode);
+        reasoningInput.disabled = !ready || Boolean(mode);
+        ttsInput.disabled = !SPEECH_SUPPORTED || !initialized;
+        const callerReady = ready && Boolean(mode) && Boolean(scenarioId) && baitbotTurn === 0 && !handoffInProgress && !handoffEnded;
+        callerInput.disabled = !callerReady;
+        sendButton.disabled = !callerReady;
+        renderHandoffControl();
+      }
+
+      function setBusy(value, status) {
         busy = value;
-        scammerInput.disabled = value;
-        sendButton.disabled = value || !initialized;
-        resetButton.disabled = value;
-        modelInput.disabled = value;
-        reasoningInput.disabled = value;
-        requestStatus.textContent = value ? 'Responder/Extractor 처리 중...' : '대기 중';
+        syncControls();
+        if (status) requestStatus.textContent = status;
+      }
+
+      function cancelSpeech() {
+        if (!SPEECH_SUPPORTED) return;
+        try {
+          window.speechSynthesis.cancel();
+        } catch (_) {
+          ttsSupport.textContent = '음성 안내를 중지하지 못했습니다.';
+        }
+      }
+
+      function primeSpeech() {
+        if (!SPEECH_SUPPORTED || !ttsInput.checked) return;
+        try {
+          window.speechSynthesis.resume();
+        } catch (_) {
+          ttsSupport.textContent = '이 브라우저에서 음성 안내를 시작하지 못했습니다.';
+        }
+      }
+
+      function speakText(text) {
+        if (!SPEECH_SUPPORTED || !ttsInput.checked || !text) return;
+        try {
+          const utterance = new window.SpeechSynthesisUtterance(String(text));
+          utterance.lang = 'ko-KR';
+          window.speechSynthesis.speak(utterance);
+        } catch (_) {
+          ttsSupport.textContent = '음성 안내를 재생하지 못했습니다.';
+        }
+      }
+
+      function speakEntries(entries) {
+        entries.forEach((entry) => {
+          if (entry.speaker === 'CALLER' || entry.speaker === 'BAITBOT') speakText(entry.text);
+        });
+      }
+
+      function applyScenarioResponse(data) {
+        if (!isRecord(data) || typeof data.scenario_id !== 'string' || !data.scenario_id || (scenarioId && data.scenario_id !== scenarioId)) {
+          scenarioId = null;
+          throw new Error(INVALID_SCENARIO_ID);
+        }
+        scenarioId = data.scenario_id;
+        if (data.mode === 'SCAMMER' || data.mode === 'NORMAL') mode = data.mode;
+        if (data.model) modelInput.value = String(data.model);
+        if (ALLOWED_REASONING.includes(data.reasoning)) reasoningInput.value = data.reasoning;
+        rememberSessionSnapshot(data);
+        const additions = replaceConversation(data.conversation);
+        updateSuspicion(data.suspicion_percent, data.handoff_available);
+        setRuntimeState({
+          call_state: data.call_state ?? (mode ? (handoffInProgress ? 'BAITBOT_ACTIVE' : 'CALLER_ACTIVE') : '-'),
+          scam_state: data.scam_state,
+          safety: data.safety,
+          turn_seq: data.baitbot_turn ?? baitbotTurn
+        });
+        if (hasOwn(data, 'event_schema')) renderEventSchema(data.event_schema);
+        if (hasOwn(data, 'attack_events')) attackEvents.textContent = jsonText(data.attack_events, '공격 이벤트 없음');
+        if (hasOwn(data, 'scenario_rag')) renderScenarioRag(data.scenario_rag);
+        if (hasOwn(data, 'timings_ms') || hasOwn(data, 'errors')) renderTimings(data.timings_ms, data.errors);
+        if (hasOwn(data, 'errors')) renderErrors(data.errors);
+        renderModeStatus();
+        return additions;
       }
 
       function errorFromPayload(payload) {
-        if (!payload || typeof payload !== 'object') return '';
+        if (!isRecord(payload)) return '';
         return payload.error || payload.detail || payload.message || '';
       }
 
@@ -464,10 +679,14 @@
         const raw = await response.text();
         let payload = {};
         if (raw) {
-          try { payload = JSON.parse(raw); } catch (_) { payload = { message: raw }; }
+          try {
+            payload = JSON.parse(raw);
+          } catch (_) {
+            payload = { message: raw };
+          }
         }
         if (!response.ok) {
-          const error = new Error(errorFromPayload(payload) || `HTTP ${response.status}`);
+          const error = new Error(errorFromPayload(payload) || 'HTTP ' + String(response.status));
           error.status = response.status;
           error.payload = payload;
           throw error;
@@ -475,72 +694,80 @@
         return payload;
       }
 
-      function hasStructuredChatPayload(payload) {
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-        return ['conversation', 'event_schema', 'scammer_message', 'baitbot_message', 'attack_events', 'timings_ms', 'errors']
-          .some((key) => Object.prototype.hasOwnProperty.call(payload, key));
+      function hasStructuredScenarioPayload(payload) {
+        return isRecord(payload) && ['conversation', 'caller_message', 'baitbot_message', 'event_schema', 'scenario_rag']
+          .some((key) => hasOwn(payload, key));
+      }
+
+      function hasPartialScenarioPayload(error) {
+        return [207, 502].includes(error && error.status) && hasStructuredScenarioPayload(error.payload);
+      }
+
+      function requestFailureText(error) {
+        const status = error && error.status ? 'HTTP ' + String(error.status) : '';
+        const detail = error && error.message && error.message !== status ? error.message : '';
+        return [status, detail].filter(Boolean).join(': ') || '요청 처리 중 오류가 발생했습니다.';
+      }
+
+      function requestOptions(body) {
+        return {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        };
+      }
+
+      function runtimeSelection() {
+        return {
+          model: modelInput.value.trim() || DEFAULT_MODEL,
+          reasoning: reasoningInput.value
+        };
       }
 
       async function loadConfig() {
         try {
           const config = await requestJson('/api/config');
-          if (config.model) modelInput.value = config.model;
+          if (config.model) modelInput.value = String(config.model);
           if (ALLOWED_REASONING.includes(config.reasoning)) reasoningInput.value = config.reasoning;
           configStatus.textContent = config.key_configured === false
-            ? '서버 API 키가 설정되지 않았습니다. 키 값은 이 화면에 표시하지 않습니다.'
-            : config.key_configured === true
-              ? '서버 모델 설정을 불러왔습니다. API 키는 서버에서만 사용됩니다.'
-              : '서버 모델 설정을 불러왔습니다. API 키 상태는 확인되지 않았습니다.';
+            ? '서버 API 키가 설정되지 않았습니다. 현재 값으로는 모델 호출이 되지 않을 수 있습니다.'
+            : '서버 모델 설정을 불러왔습니다. API 키는 서버에서만 사용됩니다.';
         } catch (error) {
-          configStatus.textContent = `서버 설정을 불러오지 못했습니다: ${error.message}`;
-        }
-      }
-
-      async function sendChat() {
-        if (busy) return;
-        const message = scammerInput.value.trim();
-        if (!message) { showError('사기범 대사를 입력하세요.'); return; }
-        const model = modelInput.value.trim() || DEFAULT_MODEL;
-        clearError();
-        setBusy(true);
-        try {
-          const body = { message, model, reasoning: reasoningInput.value };
-          if (sessionSnapshot) body.session_snapshot = sessionSnapshot;
-          const data = await requestJson('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-          });
-          applyChatResponse(data);
-          scammerInput.value = '';
-        } catch (error) {
-          if ([207, 502].includes(error.status) && hasStructuredChatPayload(error.payload)) applyChatResponse(error.payload);
-          const status = error.status ? `HTTP ${error.status}` : '';
-          const detail = error.message && error.message !== status ? error.message : '';
-          showError([status, detail].filter(Boolean).join(': ') || '요청 처리 중 오류가 발생했습니다.');
-          requestStatus.textContent = status ? `요청 실패 (${status})` : '요청 실패';
-        } finally {
-          setBusy(false);
+          configStatus.textContent = '서버 설정을 불러오지 못했습니다. ' + requestFailureText(error);
         }
       }
 
       async function resetSession() {
-        if (busy) return;
-        clearError();
-        setBusy(true);
+        if (busy) return false;
+        cancelSpeech();
+        setBusy(true, '세션을 초기화하는 중입니다.');
         try {
-          const data = await requestJson('/api/reset', { method: 'POST' });
-          rememberSessionSnapshot(data);
+          await requestJson('/api/reset', requestOptions({}));
+          clearError();
+          mode = null;
+          scenarioId = null;
+          conversation = [];
+          sessionSnapshot = null;
+          baitbotTurn = 0;
+          handoffInProgress = false;
+          handoffEnded = false;
+          handoffAllowedByServer = false;
+          handoffVisible = false;
+          suspicionPercent = 0;
+          callerInput.value = '';
           conversationList.replaceChildren();
-          renderEventSchema(data.event_schema);
-          document.getElementById('attack-events').textContent = '공격 이벤트 없음';
-          setRuntimeState({ ...data, call_state: data.call_state ?? 'BAIT_ACTIVE', turn_seq: data.turn_seq ?? 0 });
-          renderTimings(data.timings_ms, data.errors);
-          renderErrors(data.errors);
-          scammerInput.value = '';
+          renderEventSchema();
+          attackEvents.textContent = '공격 이벤트 없음';
+          clearScenarioRag();
+          renderTimings(null, []);
+          setRuntimeState({ call_state: '-', scam_state: '-', safety: '-', turn_seq: 0 });
+          updateSuspicion(0, false);
+          renderHandoffProgress(0, '대기 중');
+          renderModeStatus();
+          requestStatus.textContent = '새 세션을 시작할 수 있습니다.';
           return true;
         } catch (error) {
-          showError(error.message);
+          showError(requestFailureText(error));
           requestStatus.textContent = '세션 초기화 실패';
           return false;
         } finally {
@@ -548,20 +775,201 @@
         }
       }
 
-      async function initialize() {
-        await loadConfig();
-        initialized = await resetSession();
-        setBusy(false);
+      async function startMode(nextMode) {
+        if (busy || !initialized) return;
+        if (!await resetSession()) return;
+        primeSpeech();
+        mode = nextMode;
+        renderModeStatus();
+        syncControls();
+        clearError();
+        setBusy(true, '알 수 없는 번호의 발신자를 연결하는 중입니다.');
+        try {
+          const selection = runtimeSelection();
+          const data = await requestJson('/api/scenario4/caller', requestOptions({
+            mode: mode,
+            conversation: [],
+            model: selection.model,
+            reasoning: selection.reasoning
+          }));
+          speakEntries(applyScenarioResponse(data));
+          requestStatus.textContent = '발신자 응답을 받았습니다.';
+        } catch (error) {
+          if (hasPartialScenarioPayload(error)) {
+            try {
+              speakEntries(applyScenarioResponse(error.payload));
+            } catch (responseError) {
+              error = responseError;
+            }
+          }
+          showError(requestFailureText(error));
+          requestStatus.textContent = '발신자 연결 실패';
+        } finally {
+          setBusy(false);
+        }
       }
 
-      form.addEventListener('submit', (event) => { event.preventDefault(); sendChat(); });
-      scammerInput.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-          event.preventDefault(); form.requestSubmit();
+      async function sendCallerMessage() {
+        if (busy || !mode || handoffInProgress || handoffEnded) return;
+        if (!scenarioId) {
+          showError(INVALID_SCENARIO_ID);
+          requestStatus.textContent = 'scenario_id가 없어 대화를 계속할 수 없습니다.';
+          return;
+        }
+        const message = callerInput.value.trim();
+        if (!message) {
+          showError('내 대사를 입력하세요.');
+          callerInput.focus();
+          return;
+        }
+        primeSpeech();
+        const previousConversation = conversation;
+        conversation = conversation.concat({ speaker: 'USER', text: message });
+        renderConversation();
+        callerInput.value = '';
+        clearError();
+        setBusy(true, '발신자 응답을 기다리는 중입니다.');
+        try {
+          const selection = runtimeSelection();
+          const data = await requestJson('/api/scenario4/caller', requestOptions({
+            scenario_id: scenarioId,
+            mode: mode,
+            message: message,
+            conversation: conversation,
+            model: selection.model,
+            reasoning: selection.reasoning
+          }));
+          speakEntries(applyScenarioResponse(data));
+          requestStatus.textContent = '발신자 응답을 받았습니다.';
+        } catch (error) {
+          let applied = false;
+          if (hasPartialScenarioPayload(error)) {
+            try {
+              speakEntries(applyScenarioResponse(error.payload));
+              applied = true;
+            } catch (responseError) {
+              error = responseError;
+            }
+          }
+          if (!applied) {
+            conversation = previousConversation;
+            renderConversation();
+            callerInput.value = message;
+          }
+          showError(requestFailureText(error));
+          requestStatus.textContent = '발신자 응답 실패';
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      function responseTurn(data, fallback) {
+        const value = Number(data && data.baitbot_turn);
+        if (!Number.isInteger(value)) return fallback;
+        return Math.min(MAX_BAITBOT_TURNS, Math.max(fallback, value));
+      }
+
+      async function startHandoff() {
+        if (busy || !canStartHandoff()) return;
+        primeSpeech();
+        clearError();
+        handoffInProgress = true;
+        syncControls();
+        try {
+          while (!handoffEnded && baitbotTurn < MAX_BAITBOT_TURNS) {
+            const nextTurn = baitbotTurn + 1;
+            renderHandoffProgress(nextTurn, '진행 중');
+            setBusy(true, '미끼봇 전환 ' + String(nextTurn) + '/' + String(MAX_BAITBOT_TURNS) + ' 처리 중입니다.');
+            const selection = runtimeSelection();
+            const body = {
+              scenario_id: scenarioId,
+              mode: mode,
+              conversation: conversation,
+              baitbot_turn: nextTurn,
+              model: selection.model,
+              reasoning: selection.reasoning
+            };
+            if (sessionSnapshot) body.session_snapshot = sessionSnapshot;
+            try {
+              const data = await requestJson('/api/scenario4/handoff', requestOptions(body));
+              const entries = applyScenarioResponse(data);
+              baitbotTurn = responseTurn(data, nextTurn);
+              speakEntries(entries);
+              handoffEnded = Boolean(data.ended) || baitbotTurn >= MAX_BAITBOT_TURNS;
+              renderHandoffProgress(baitbotTurn, handoffEnded ? '종료됨' : '진행 중');
+            } catch (error) {
+              if (hasPartialScenarioPayload(error)) {
+                try {
+                  const entries = applyScenarioResponse(error.payload);
+                  baitbotTurn = responseTurn(error.payload, nextTurn);
+                  handoffEnded = Boolean(error.payload.ended) || baitbotTurn >= MAX_BAITBOT_TURNS;
+                  speakEntries(entries);
+                  renderHandoffProgress(baitbotTurn, handoffEnded ? '종료됨' : '부분 응답 후 중단됨');
+                } catch (responseError) {
+                  error = responseError;
+                  renderHandoffProgress(nextTurn, '요청 실패');
+                }
+              } else {
+                renderHandoffProgress(nextTurn, '요청 실패');
+              }
+              showError(requestFailureText(error));
+              requestStatus.textContent = '미끼봇 전환 요청 실패';
+              break;
+            }
+          }
+        } finally {
+          busy = false;
+          handoffInProgress = false;
+          if (handoffEnded) {
+            requestStatus.textContent = '미끼봇 전환이 ' + String(baitbotTurn) + '/' + String(MAX_BAITBOT_TURNS) + '에서 종료되었습니다.';
+          }
+          syncControls();
+        }
+      }
+
+      function initializeSpeech() {
+        if (!SPEECH_SUPPORTED) {
+          ttsInput.checked = false;
+          ttsSupport.textContent = '이 브라우저에서는 음성 안내를 지원하지 않습니다.';
+          return;
+        }
+        ttsSupport.textContent = 'LLM 발신자와 미끼봇 대사를 한국어 음성으로 안내합니다.';
+      }
+
+      async function initialize() {
+        initializeSpeech();
+        await loadConfig();
+        initialized = true;
+        await resetSession();
+        syncControls();
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        sendCallerMessage();
+      });
+      callerInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          form.requestSubmit();
         }
       });
+      startScammerButton.addEventListener('click', () => startMode('SCAMMER'));
+      startNormalButton.addEventListener('click', () => startMode('NORMAL'));
+      handoffButton.addEventListener('click', startHandoff);
       resetButton.addEventListener('click', resetSession);
+      ttsInput.addEventListener('change', () => {
+        if (ttsInput.checked) {
+          primeSpeech();
+          ttsSupport.textContent = '음성 안내를 켰습니다.';
+        } else {
+          cancelSpeech();
+          ttsSupport.textContent = '음성 안내를 껐습니다.';
+        }
+      });
+
       renderEventSchema();
+      clearScenarioRag();
       initialize();
     })();
   </script>
