@@ -4,7 +4,7 @@
 > **문서 상태:** 3인 개발팀 구현 기준선  
 > **대상:** 기획자, 프론트엔드·백엔드·AI 개발자, 심사·리뷰 담당자  
 > **제품 형태:** 실제 통신망이 아닌 웹 기반 보이스피싱 대응 시뮬레이터  
-> **기본 LLM Provider:** OpenRouter API  
+> **기본 LLM Provider:** Google AI Studio Gemini API<br>
 > **핵심 AI 역할:** Scenario Judge, Responder Agent, Extractor Agent  
 > **데모 전용 AI 역할:** Scammer Simulator  
 > **음성:** 사용자 음성 등록, Voice Clone, TTS  
@@ -20,7 +20,7 @@
 
 | 그림 | 중심 주제 | 문서에서 확정하는 핵심 규칙 |
 |---:|---|---|
-| 1 | 전체 시스템 아키텍처 | Next.js·FastAPI·OpenRouter·Voice/TTS·PostgreSQL의 책임과 경계 |
+| 1 | 전체 시스템 아키텍처 | Next.js·FastAPI·Google AI Studio Gemini·Voice/TTS·PostgreSQL의 책임과 경계 |
 | 2 | 보이스피싱 탐지 + 미끼봇 런타임 | 탐지 상태와 미끼봇 응답 흐름, PASS/DEFEND 분기 |
 | 3 | Extractor·피싱 정보 스키마·신고 패키징 | Responder와 Extractor의 결과 경로 분리, 이벤트 준비도 |
 | 4 | 이중 RAG | Scenario RAG와 Adversarial Safety RAG의 논리적 분리 |
@@ -47,7 +47,7 @@
 
 # 0. 설계 결론
 
-Aegis MVP는 **Next.js 웹 클라이언트 + FastAPI 모듈형 모놀리스 + PostgreSQL/pgvector + OpenRouter + Voice Clone/TTS Provider**로 구현한다.
+Aegis MVP는 **Next.js 웹 클라이언트 + FastAPI 모듈형 모놀리스 + PostgreSQL/pgvector + Google AI Studio Gemini + Voice Clone/TTS Provider**로 구현한다.
 
 제품이 증명해야 하는 흐름은 다음과 같다.
 
@@ -71,8 +71,8 @@ Aegis MVP는 **Next.js 웹 클라이언트 + FastAPI 모듈형 모놀리스 + Po
 | 제품 범위 | 웹 기반 통화 시뮬레이터 | 실제 PSTN·SIP 연계 없이 핵심 AI 흐름과 UX를 재현 |
 | 프론트엔드 | Next.js + React + TypeScript | 페이지 분리, 상태 UI, 브라우저 오디오, WebSocket 구현에 적합 |
 | 백엔드 | FastAPI 모듈형 모놀리스 | 3인 팀이 빠르게 개발하면서 상태·AI 호출·오디오를 중앙 통제 |
-| LLM Provider | OpenRouter 우선 | Scenario Judge·Responder·Extractor·Scammer Simulator를 단일 Adapter로 교체 가능 |
-| 향후 Provider | Codex OAuth Adapter 후보 | MVP 이후 Provider 교체점으로만 정의하고 기본 구현은 OpenRouter로 고정 |
+| LLM Provider | Google AI Studio Gemini 우선 | Scenario Judge·Responder·Extractor·Scammer Simulator를 단일 Adapter로 교체 가능 |
+| 향후 Provider | Codex OAuth Adapter 후보 | MVP 이후 Provider 교체점으로만 정의하고 기본 구현은 Google AI Studio Gemini로 고정 |
 | 제품 Agent | Responder, Extractor | 대화와 정보 추출의 목적·출력·실패 경로를 분리 |
 | 데모 Agent | Scammer Simulator | 페이지 3·4의 사기범 발화를 생성하는 시뮬레이션 전용 컴포넌트 |
 | 보이스피싱 판단 | Scenario RAG + Scenario Judge | 현재 문맥을 과거 시나리오·정상 사례와 비교해 상태 갱신 |
@@ -170,7 +170,7 @@ Aegis는 차단 기능을 대체하는 제품이 아니라, 차단 외에 다음
 |---|---|---|
 | 웹 클라이언트 | Next.js, MediaRecorder, Web Audio, WebSocket | 4개 페이지, 마이크 녹음, 사기범 텍스트, 상태·스키마·로그 표시, TTS 재생 |
 | Aegis API | FastAPI, Session Manager, FSM, Turn Processor | 상태 전이, 동시성, AI 호출 조건, 데이터 저장, 실시간 이벤트 |
-| AI Provider | OpenRouter Adapter | Scenario Judge, Responder, Extractor, Scammer Simulator, 필요 시 STT |
+| AI Provider | Google AI Studio Gemini Adapter | Scenario Judge, Responder, Extractor, Scammer Simulator, 필요 시 STT |
 | 음성 Provider | Voice Clone/TTS Adapter | Voice Profile 생성과 미끼봇 음성 합성 |
 | 데이터·연계 | PostgreSQL, pgvector, Outbox, Report Adapter | 세션·턴·이벤트·RAG 저장, 신고 패키지와 재시도 |
 
@@ -219,7 +219,7 @@ class ReportAdapter:
     async def dispatch(self, package): ...
 ```
 
-MVP의 `LLMProvider` 기본 구현은 OpenRouter다. Codex OAuth는 별도 구현 후보이며, 인증·사용 계약이 확정되기 전까지 기본 경로에 섞지 않는다.
+MVP의 `LLMProvider` 기본 구현은 Google AI Studio Gemini다. Codex OAuth는 별도 구현 후보이며, 인증·사용 계약이 확정되기 전까지 기본 경로에 섞지 않는다.
 
 ## 2.3 FastAPI 내부 모듈
 
@@ -1244,8 +1244,9 @@ BAIT_ACTIVE + 기존 scam_state 유지
 - 모델명은 환경변수로 교체
 
 ```env
-LLM_PROVIDER=openrouter
-OPENROUTER_BASE_URL=...
+LLM_PROVIDER=google_ai_studio
+google_ai_studio=your-google-ai-studio-api-key
+GEMINI_MODEL=gemini-2.0-flash-lite
 SCENARIO_JUDGE_MODEL=...
 RESPONDER_MODEL=...
 EXTRACTOR_MODEL=...
@@ -1341,7 +1342,7 @@ Judge는 통화 종료, Handoff, 신고, TTS를 직접 실행할 권한이 없�
 | ORM/Migration | SQLAlchemy 2, Alembic | PostgreSQL 모델·마이그레이션 |
 | Database | PostgreSQL | 세션·턴·사건·Outbox |
 | Vector | pgvector | 두 RAG namespace를 동일 DB에서 운영 |
-| LLM | OpenRouter Adapter | 네 역할의 모델 교체점 |
+| LLM | Google AI Studio Gemini Adapter | 네 역할의 모델 교체점 |
 | Voice/TTS | Voice Provider Adapter, MVP 예: ElevenLabs | Voice Clone과 TTS |
 | Test | pytest, Vitest, Playwright | 단위·계약·브라우저 E2E |
 | Local | Docker Compose | 3인 공통 실행환경 |
@@ -1391,7 +1392,7 @@ Docker Compose
 외부 호출:
 
 ```text
-api → OpenRouter
+api → Google AI Studio Gemini
 api → Voice/TTS Provider
 ```
 
@@ -1468,7 +1469,7 @@ Adversarial RAG에는 다음을 저장하지 않는다.
 |---|---|---|
 | **A. Frontend / Audio** | 사용자 경험과 브라우저 음성 | 4개 페이지, 대시보드, 녹음, STT 업로드, TTS 재생, WS 상태, Playwright |
 | **B. Backend / State / Data** | 상태·API·저장·배포 | FastAPI, Call/Scam FSM, Turn Processor, DB, Outbox, Report Package, Docker |
-| **C. AI / RAG / Voice / Eval** | OpenRouter·RAG·Safety·음성 | Scenario Judge, Scenario RAG, Safety, Adversarial RAG, Responder, Extractor, Simulator, Voice Adapter, 평가셋 |
+| **C. AI / RAG / Voice / Eval** | Google AI Studio Gemini·RAG·Safety·음성 | Scenario Judge, Scenario RAG, Safety, Adversarial RAG, Responder, Extractor, Simulator, Voice Adapter, 평가셋 |
 
 ## 12.2 공동 소유 항목
 
@@ -1513,7 +1514,7 @@ R: Responsible, C: Consulted
 | 일차 | 공동 목표 | A. Frontend/Audio | B. Backend/State/Data | C. AI/RAG/Voice |
 |---:|---|---|---|---|
 | 1 | 계약·상태 확정 | 페이지 wireframe, UI event 목록 | OpenAPI/WS 초안, DB ERD | Prompt/Schema 초안, 시나리오 정의 |
-| 2 | 프로젝트 골격 | Next.js route와 공통 store | FastAPI, migration, session API | Fake Provider, OpenRouter Adapter 골격 |
+| 2 | 프로젝트 골격 | Next.js route와 공통 store | FastAPI, migration, session API | Fake Provider, Gemini Adapter 골격 |
 | 3 | 페이지 1·2 | 녹음 UI, 자동 끊기 UI | Voice API, AUTO_REJECT FSM | Voice/TTS 연결, 샘플 품질 규칙 |
 | 4 | 페이지 3 골격 | 사기범/미끼봇 타임라인 | Scenario session, Turn Processor | Flow Manager, Scammer Simulator |
 | 5 | 탐지 | 상태 배지·근거 표시 | Scam State 저장·WS | Scenario RAG, Judge, 평가 fixture |
@@ -1571,7 +1572,7 @@ R: Responsible, C: Consulted
 | 계층 | 대상 |
 |---|---|
 | Unit | 정규화, 상태 전이, Safety Rule, Event merge, completeness |
-| Contract | OpenRouter 응답, Extractor JSON, WS payload, Provider Adapter |
+| Contract | Gemini generateContent 응답, Extractor JSON, WS payload, Provider Adapter |
 | Integration | PostgreSQL, pgvector retrieval, Outbox, Package 생성 |
 | E2E | 4개 페이지 사용자 흐름 |
 | AI Eval | Scenario Judge, Extractor 정확도, Responder 품질, Safety |
@@ -1679,7 +1680,7 @@ event_updated_at
 | Extractor → 피싱 이벤트 | 4장 | 충족 |
 | Responder → TTS | 3.5 | 충족 |
 | 필수 정보 충족 후 신고 패키징 | 4.6 | 충족 |
-| OpenRouter 우선 | 2장, 9장 | 충족 |
+| Google AI Studio Gemini 우선 | 2장, 9장 | 충족 |
 | 3인 역할·구현계획 | 12~13장 | 충족 |
 
 ## 15.2 2차: 상태·흐름 검토
@@ -1768,7 +1769,7 @@ event_updated_at
 
 | 위험 | 영향 | 대응 |
 |---|---|---|
-| OpenRouter 모델별 JSON 차이 | Extractor/State 오류 | Adapter + Pydantic + fixture |
+| Gemini 모델별 JSON 차이 | Extractor/State 오류 | Adapter + Pydantic + fixture |
 | TTS 지연 | 대화 부자연스러움 | 짧은 문장, text 선표시, fallback voice |
 | 사용자 음성 복제 실패 | 페이지 3·4 차질 | 기본 음성 fallback |
 | Scenario LLM 이탈 | 데모 재현성 저하 | phase/allowed facts/최대 턴 강제 |
@@ -1788,7 +1789,7 @@ event_updated_at
 
 - 웹 시뮬레이터
 - 4개 페이지
-- OpenRouter
+- Google AI Studio Gemini
 - Voice Clone/TTS
 - 이중 RAG
 - Event Schema
@@ -1900,7 +1901,7 @@ Aegis Canonical Phishing Event
 - [ ] Scenario Flow JSON 형식 확정
 - [ ] Extractor EventPatch JSON Schema 확정
 - [ ] Phishing Event v1 JSON Schema 확정
-- [ ] Fake OpenRouter/Voice Provider 구현
+- [ ] Fake Gemini/Voice Provider 구현
 - [ ] PostgreSQL migration 생성
 - [ ] 4개 페이지 route 생성
 - [ ] Scenario RAG seed 문서 준비
