@@ -24,6 +24,9 @@
     button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #3269a8; outline-offset: 2px; }
     .fields { display: grid; gap: .75rem; grid-template-columns: 2fr 1fr; margin-bottom: .75rem; }
     .actions { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem; }
+    .auth-row { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem; margin-top: .75rem; }
+    .auth-login-button { font-weight: 700; min-height: 44px; }
+    input[readonly] { background: #f4f6f8; }
     .tts-control { align-items: center; display: inline-flex; gap: .45rem; margin: 0; }
     .mode-actions { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mode-button { font-weight: 700; text-align: left; }
@@ -93,20 +96,13 @@
       <h2 id="settings-title">런타임 설정</h2>
       <div class="fields">
         <div>
-          <label for="model-input">사기범/Responder/Extractor 공용 모델</label>
-          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="gemini-2.0-flash-lite">
+          <label for="model-input">Codex ChatGPT OAuth 모델</label>
+          <input id="model-input" type="text" autocomplete="off" spellcheck="false" value="gpt-5.5" readonly aria-readonly="true">
         </div>
         <div>
           <label for="reasoning-input">추론 수준</label>
           <select id="reasoning-input" disabled>
-            <option value="none">none</option>
-            <option value="minimal">minimal</option>
             <option value="low" selected>low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh">xhigh</option>
-            <option value="max">max</option>
-            <option value="ultra">ultra</option>
           </select>
         </div>
       </div>
@@ -119,11 +115,15 @@
         <button id="reset-button" type="button" disabled>새 세션</button>
         <span id="request-status" class="muted" role="status" aria-live="polite">준비 중</span>
       </div>
+      <div class="auth-row">
+        <span id="auth-status" class="muted" role="status" aria-live="polite" aria-atomic="true">ChatGPT OAuth 상태를 확인하는 중입니다.</span>
+        <button id="auth-login-button" class="auth-login-button" type="button" disabled>GPT 로그인</button>
+      </div>
     </section>
 
     <section aria-labelledby="start-title">
       <h2 id="start-title">알 수 없는 번호의 발신자</h2>
-      <p class="muted">모드를 선택하면 LLM 발신자가 먼저 대화를 시작합니다.</p>
+      <p class="muted">ChatGPT OAuth 로그인 후 모드를 선택하면 LLM 발신자가 먼저 대화를 시작합니다.</p>
       <div class="mode-actions">
         <button id="start-scammer-button" class="mode-button" type="button" aria-pressed="false" disabled>4-1 사기범 모드 시작</button>
         <button id="start-normal-button" class="mode-button" type="button" aria-pressed="false" disabled>4-2 일반인 모드 시작</button>
@@ -145,7 +145,7 @@
           <progress id="suspicion-progress" max="100" value="0" aria-describedby="suspicion-description suspicion-announcement" aria-valuetext="사기범 가능성 0%">0%</progress>
           <output id="suspicion-percent" for="suspicion-progress">0%</output>
         </div>
-        <p id="suspicion-description" class="muted">RAG 대화 유사도로 계산한 사기범 가능성입니다.</p>
+        <p id="suspicion-description" class="muted">RAG 대화 유사도에 따른 안내 지표이며, 수동 전환 여부를 제한하지 않습니다.</p>
         <p id="suspicion-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">사기범 가능성 0%</p>
       </div>
     </section>
@@ -160,13 +160,15 @@
         <label for="caller-input">내 대사</label>
         <textarea id="caller-input" placeholder="내 대사를 입력하세요. Enter로 전송하고 Shift+Enter로 줄바꿈합니다." disabled></textarea>
         <div class="actions">
+          <button id="mic-button" type="button" disabled>음성 입력</button>
+          <span id="mic-support" class="muted" role="status" aria-live="polite">음성 입력은 브라우저 지원 여부를 확인하는 중입니다.</span>
           <button id="send-button" type="submit" disabled>전송</button>
           <span class="muted">Enter 전송 · Shift+Enter 줄바꿈</span>
         </div>
       </form>
       <p id="handoff-progress" class="handoff-progress muted" role="status" aria-live="polite" aria-atomic="true">미끼봇 전환 0/5 대기 중</p>
       <div id="handoff-action" class="handoff-action" hidden>
-        <button id="handoff-button" class="handoff-button" type="button" disabled hidden>사기범 가능성 80% 이상 · 미끼봇으로 전환</button>
+        <button id="handoff-button" class="handoff-button" type="button" disabled hidden>수동으로 미끼봇에 전환 (의심도는 참고)</button>
       </div>
       <p id="handoff-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
     </section>
@@ -223,9 +225,13 @@
     (() => {
       'use strict';
 
-      const DEFAULT_MODEL = 'gemini-2.0-flash-lite';
+      const DEFAULT_MODEL = 'gpt-5.5';
       const MAX_BAITBOT_TURNS = 5;
-      const ALLOWED_REASONING = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+      const DEFAULT_REASONING = 'low';
+      const ALLOWED_REASONING = ['low'];
+      const AUTH_POLL_ATTEMPTS = 60;
+      const AUTH_POLL_DELAY_MS = 2000;
+      const TTS_TIMEOUT_MS = 30000;
       const EVENT_SCHEMA_FIELDS = [
         { key: 'impersonated_org', label: '사칭 기관' },
         { key: 'requested_amount', label: '요구 금액' },
@@ -240,17 +246,22 @@
       const INVALID_SCENARIO_ID = '서버 응답의 scenario_id가 없거나 현재 세션과 일치하지 않습니다. 새 세션을 시작하세요.';
       const SESSION_SNAPSHOT_FIELDS = ['session_id', 'turn_seq', 'conversation', 'event_schema', 'attack_events'];
       const SPEECH_SUPPORTED = Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance);
+      const SPEECH_INPUT_CONSTRUCTOR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
       const modelInput = document.getElementById('model-input');
       const reasoningInput = document.getElementById('reasoning-input');
       const ttsInput = document.getElementById('tts-input');
       const ttsSupport = document.getElementById('tts-support');
       const resetButton = document.getElementById('reset-button');
+      const authStatus = document.getElementById('auth-status');
+      const authLoginButton = document.getElementById('auth-login-button');
       const startScammerButton = document.getElementById('start-scammer-button');
       const startNormalButton = document.getElementById('start-normal-button');
       const modeStatus = document.getElementById('mode-status');
       const callerInput = document.getElementById('caller-input');
       const sendButton = document.getElementById('send-button');
+      const micButton = document.getElementById('mic-button');
+      const micSupport = document.getElementById('mic-support');
       const form = document.getElementById('conversation-form');
       const conversationList = document.getElementById('conversation-list');
       const suspicionProgress = document.getElementById('suspicion-progress');
@@ -285,6 +296,11 @@
       let handoffAllowedByServer = false;
       let handoffVisible = false;
       let suspicionPercent = 0;
+      let authenticated = false;
+      let authPending = true;
+      let authError = false;
+      let speechRecognition = null;
+      let listening = false;
 
       function isRecord(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -546,7 +562,7 @@
       }
 
       function canStartHandoff() {
-        return Boolean(mode) && Boolean(scenarioId) && suspicionPercent >= 80 && handoffAllowedByServer && !handoffEnded;
+        return Boolean(mode) && Boolean(scenarioId) && !handoffEnded;
       }
 
       function renderHandoffControl() {
@@ -555,7 +571,7 @@
         handoffButton.hidden = !available;
         handoffButton.disabled = !available || busy || handoffInProgress;
         if (available && !handoffVisible) {
-          handoffAnnouncement.textContent = '사기범 가능성 80% 이상입니다. 미끼봇 전환 버튼을 사용할 수 있습니다.';
+          handoffAnnouncement.textContent = '수동 미끼봇 전환을 사용할 수 있습니다. 의심도는 참고 지표입니다.';
         } else if (!available && handoffVisible) {
           handoffAnnouncement.textContent = '';
         }
@@ -586,18 +602,23 @@
       }
 
       function syncControls() {
-        const ready = initialized && !busy;
+        const ready = initialized && authenticated && !authPending && !busy;
         startScammerButton.disabled = !ready;
         startNormalButton.disabled = !ready;
         startScammerButton.setAttribute('aria-pressed', String(mode === 'SCAMMER'));
         startNormalButton.setAttribute('aria-pressed', String(mode === 'NORMAL'));
         resetButton.disabled = !ready;
-        modelInput.disabled = !ready || Boolean(mode);
-        reasoningInput.disabled = !ready || Boolean(mode);
+        modelInput.disabled = !initialized || Boolean(mode);
+        modelInput.readOnly = true;
+        reasoningInput.disabled = true;
         ttsInput.disabled = !SPEECH_SUPPORTED || !initialized;
         const callerReady = ready && Boolean(mode) && Boolean(scenarioId) && baitbotTurn === 0 && !handoffInProgress && !handoffEnded;
         callerInput.disabled = !callerReady;
         sendButton.disabled = !callerReady;
+        micButton.disabled = !callerReady || !speechRecognition;
+        micButton.textContent = listening ? '음성 입력 중지' : '음성 입력';
+        authLoginButton.disabled = !initialized || authPending || busy || authenticated;
+        authLoginButton.textContent = authenticated ? 'GPT 연결됨' : 'GPT 로그인';
         renderHandoffControl();
       }
 
@@ -625,21 +646,102 @@
         }
       }
 
-      function speakText(text) {
-        if (!SPEECH_SUPPORTED || !ttsInput.checked || !text) return;
+      function initializeSpeechInput() {
+        if (typeof SPEECH_INPUT_CONSTRUCTOR !== 'function') {
+          micSupport.textContent = '이 브라우저는 음성 입력을 지원하지 않습니다. 텍스트로 입력하세요.';
+          return;
+        }
         try {
-          const utterance = new window.SpeechSynthesisUtterance(String(text));
-          utterance.lang = 'ko-KR';
-          window.speechSynthesis.speak(utterance);
+          speechRecognition = new SPEECH_INPUT_CONSTRUCTOR();
+          speechRecognition.lang = 'ko-KR';
+          speechRecognition.continuous = false;
+          speechRecognition.interimResults = false;
+          speechRecognition.maxAlternatives = 1;
+          speechRecognition.onstart = () => {
+            listening = true;
+            micSupport.textContent = '음성을 듣는 중입니다. 오디오는 이 앱 API로 전송하지 않습니다.';
+            syncControls();
+          };
+          speechRecognition.onresult = (event) => {
+            const result = event.results && event.results[0] && event.results[0][0];
+            const transcript = result && typeof result.transcript === 'string' ? result.transcript.trim() : '';
+            if (transcript) {
+              callerInput.value = (callerInput.value + ' ' + transcript).trim();
+              callerInput.focus();
+              micSupport.textContent = '음성 결과를 입력란에 넣었습니다. 전송 전 내용을 확인하세요.';
+            }
+          };
+          speechRecognition.onerror = () => {
+            listening = false;
+            micSupport.textContent = '음성 입력을 사용하지 못했습니다. 텍스트로 입력하세요.';
+            syncControls();
+          };
+          speechRecognition.onend = () => {
+            listening = false;
+            if (!micSupport.textContent.includes('입력란')) {
+              micSupport.textContent = '음성 입력이 끝났습니다. 오디오는 서버에 저장하지 않습니다.';
+            }
+            syncControls();
+          };
+          micSupport.textContent = '음성은 브라우저에서 인식하고 텍스트만 서버로 전송합니다. 텍스트 입력도 사용할 수 있습니다.';
         } catch (_) {
-          ttsSupport.textContent = '음성 안내를 재생하지 못했습니다.';
+          speechRecognition = null;
+          micSupport.textContent = '음성 입력을 초기화하지 못했습니다. 텍스트로 입력하세요.';
         }
       }
 
-      function speakEntries(entries) {
-        entries.forEach((entry) => {
-          if (entry.speaker === 'CALLER' || entry.speaker === 'BAITBOT') speakText(entry.text);
+      function startSpeechInput() {
+        if (!speechRecognition || listening || micButton.disabled) return;
+        try {
+          speechRecognition.start();
+        } catch (_) {
+          listening = false;
+          micSupport.textContent = '음성 입력을 시작하지 못했습니다. 텍스트로 입력하세요.';
+          syncControls();
+        }
+      }
+
+      function stopSpeechInput() {
+        if (!speechRecognition || !listening) return;
+        try {
+          speechRecognition.stop();
+        } catch (_) {
+          listening = false;
+        }
+      }
+
+      function speakText(text) {
+        return new Promise((resolve) => {
+          if (!SPEECH_SUPPORTED || !ttsInput.checked || !text) {
+            resolve();
+            return;
+          }
+          try {
+            const utterance = new window.SpeechSynthesisUtterance(String(text));
+            utterance.lang = 'ko-KR';
+            let settled = false;
+            let timeoutId;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timeoutId);
+              resolve();
+            };
+            timeoutId = window.setTimeout(finish, TTS_TIMEOUT_MS);
+            utterance.onend = finish;
+            utterance.onerror = finish;
+            window.speechSynthesis.speak(utterance);
+          } catch (_) {
+            ttsSupport.textContent = '음성 안내를 재생하지 못했습니다.';
+            finish();
+          }
         });
+      }
+
+      async function speakEntries(entries) {
+        for (const entry of entries) {
+          if (entry.speaker === 'CALLER' || entry.speaker === 'BAITBOT') await speakText(entry.text);
+        }
       }
 
       function applyScenarioResponse(data) {
@@ -649,13 +751,16 @@
         }
         scenarioId = data.scenario_id;
         if (data.mode === 'SCAMMER' || data.mode === 'NORMAL') mode = data.mode;
-        if (data.model) modelInput.value = String(data.model);
-        if (ALLOWED_REASONING.includes(data.reasoning)) reasoningInput.value = data.reasoning;
+        modelInput.value = DEFAULT_MODEL;
+        reasoningInput.value = DEFAULT_REASONING;
         rememberSessionSnapshot(data);
         const additions = replaceConversation(data.conversation);
         updateSuspicion(data.suspicion_percent, data.handoff_available);
+        const lastSpeaker = conversation.length ? conversation[conversation.length - 1].speaker : null;
         setRuntimeState({
-          call_state: data.call_state ?? (mode ? (handoffInProgress ? 'BAITBOT_ACTIVE' : 'CALLER_ACTIVE') : '-'),
+          call_state: mode && scenarioId && !handoffInProgress && !handoffEnded
+            ? 'USER_ACTIVE'
+            : data.call_state ?? (mode ? (data.ended ? 'ENDED' : lastSpeaker === 'BAITBOT' ? 'BAITBOT_ACTIVE' : 'USER_ACTIVE') : '-'),
           scam_state: data.scam_state,
           safety: data.safety,
           turn_seq: data.baitbot_turn ?? baitbotTurn
@@ -709,29 +814,112 @@
         return [status, detail].filter(Boolean).join(': ') || '요청 처리 중 오류가 발생했습니다.';
       }
 
-      function requestOptions(body) {
+      function requestOptions(body, extraHeaders = {}) {
         return {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...extraHeaders },
           body: JSON.stringify(body)
         };
       }
 
       function runtimeSelection() {
         return {
-          model: modelInput.value.trim() || DEFAULT_MODEL,
-          reasoning: reasoningInput.value
+          model: DEFAULT_MODEL,
+          reasoning: DEFAULT_REASONING
         };
+      }
+
+      function authIsAuthenticated(data) {
+        return isRecord(data) && (
+          data.authenticated === true || data.status === 'authenticated' || data.status === 'ready'
+        );
+      }
+
+      function authIsPending(data) {
+        return isRecord(data) && (data.pending === true || data.status === 'pending' || data.status === 'starting');
+      }
+
+      function setAuthState(data, { pending = false, error = false } = {}) {
+        const statusError = isRecord(data) && ['error', 'unavailable', 'unsupported'].includes(data.status);
+        authenticated = !error && !statusError && authIsAuthenticated(data);
+        authPending = !error && !statusError && (pending || authIsPending(data));
+        authError = error || statusError;
+        if (authError) {
+          authStatus.textContent = 'ChatGPT OAuth 상태를 확인하지 못했습니다. 다시 시도하세요.';
+        } else if (authPending) {
+          authStatus.textContent = 'GPT 로그인 진행 중입니다. 브라우저에서 ChatGPT 인증을 완료하세요.';
+        } else if (authenticated) {
+          authStatus.textContent = 'ChatGPT OAuth 로그인 완료 · gpt-5.5 / low';
+        } else {
+          authStatus.textContent = 'ChatGPT OAuth 로그인이 필요합니다.';
+        }
+        syncControls();
+      }
+
+      function authFailureText(error) {
+        if (error && error.status === 403) return 'GPT 로그인은 로컬에서만 시작할 수 있습니다.';
+        return 'GPT 로그인을 시작하지 못했습니다. 로컬 Codex에서 다시 시도하세요.';
+      }
+
+      function wait(milliseconds) {
+        return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+      }
+
+      async function loadAuthStatus() {
+        authPending = true;
+        authError = false;
+        authStatus.textContent = 'ChatGPT OAuth 상태를 확인하는 중입니다.';
+        syncControls();
+        try {
+          setAuthState(await requestJson('/api/auth/status'));
+        } catch (_) {
+          setAuthState(null, { error: true });
+        }
+      }
+
+      async function pollAuthStatus() {
+        for (let attempt = 0; attempt < AUTH_POLL_ATTEMPTS; attempt += 1) {
+          await wait(AUTH_POLL_DELAY_MS);
+          try {
+            const data = await requestJson('/api/auth/status');
+            const terminalError = isRecord(data) && ['error', 'unavailable', 'unsupported'].includes(data.status);
+            setAuthState(data, { pending: !authIsAuthenticated(data) && !terminalError });
+            if (authenticated || authError) return authenticated;
+            authStatus.textContent = 'ChatGPT OAuth 로그인을 기다리는 중입니다. 브라우저 인증을 완료하세요. (' + String(attempt + 1) + '/' + String(AUTH_POLL_ATTEMPTS) + ')';
+          } catch (_) {
+            setAuthState(null, { error: true });
+            return false;
+          }
+        }
+        setAuthState(null, { error: true });
+        authStatus.textContent = 'GPT 로그인 상태 확인 시간이 초과되었습니다. 다시 시도하세요.';
+        syncControls();
+        return false;
+      }
+
+      async function loginWithChatGPT() {
+        if (!initialized || busy || authPending) return;
+        authPending = true;
+        authError = false;
+        authStatus.textContent = 'GPT 로그인 진행 중입니다. 브라우저에서 ChatGPT 인증을 완료하세요.';
+        syncControls();
+        try {
+          await requestJson('/api/auth/login', requestOptions({}, { 'X-Baitbot-Local': '1' }));
+          setAuthState({ status: 'pending', pending: true }, { pending: true });
+          await pollAuthStatus();
+        } catch (error) {
+          setAuthState(null, { error: true });
+          authStatus.textContent = authFailureText(error);
+          syncControls();
+        }
       }
 
       async function loadConfig() {
         try {
           const config = await requestJson('/api/config');
-          if (config.model) modelInput.value = String(config.model);
-          if (ALLOWED_REASONING.includes(config.reasoning)) reasoningInput.value = config.reasoning;
-          configStatus.textContent = config.key_configured === false
-            ? '서버 API 키가 설정되지 않았습니다. 현재 값으로는 모델 호출이 되지 않을 수 있습니다.'
-            : '서버 모델 설정을 불러왔습니다. API 키는 서버에서만 사용됩니다.';
+          modelInput.value = DEFAULT_MODEL;
+          reasoningInput.value = DEFAULT_REASONING;
+          configStatus.textContent = 'Codex ChatGPT OAuth 설정을 불러왔습니다. 모델 gpt-5.5, 추론 low를 사용합니다.';
         } catch (error) {
           configStatus.textContent = '서버 설정을 불러오지 못했습니다. ' + requestFailureText(error);
         }
@@ -739,6 +927,7 @@
 
       async function resetSession() {
         if (busy) return false;
+        stopSpeechInput();
         cancelSpeech();
         setBusy(true, '세션을 초기화하는 중입니다.');
         try {
@@ -776,7 +965,7 @@
       }
 
       async function startMode(nextMode) {
-        if (busy || !initialized) return;
+        if (busy || !initialized || !authenticated) return;
         if (!await resetSession()) return;
         primeSpeech();
         mode = nextMode;
@@ -792,12 +981,12 @@
             model: selection.model,
             reasoning: selection.reasoning
           }));
-          speakEntries(applyScenarioResponse(data));
+          await speakEntries(applyScenarioResponse(data));
           requestStatus.textContent = '발신자 응답을 받았습니다.';
         } catch (error) {
           if (hasPartialScenarioPayload(error)) {
             try {
-              speakEntries(applyScenarioResponse(error.payload));
+              await speakEntries(applyScenarioResponse(error.payload));
             } catch (responseError) {
               error = responseError;
             }
@@ -839,13 +1028,13 @@
             model: selection.model,
             reasoning: selection.reasoning
           }));
-          speakEntries(applyScenarioResponse(data));
+          await speakEntries(applyScenarioResponse(data));
           requestStatus.textContent = '발신자 응답을 받았습니다.';
         } catch (error) {
           let applied = false;
           if (hasPartialScenarioPayload(error)) {
             try {
-              speakEntries(applyScenarioResponse(error.payload));
+              await speakEntries(applyScenarioResponse(error.payload));
               applied = true;
             } catch (responseError) {
               error = responseError;
@@ -870,10 +1059,11 @@
       }
 
       async function startHandoff() {
-        if (busy || !canStartHandoff()) return;
+        if (busy || !authenticated || !canStartHandoff()) return;
         primeSpeech();
         clearError();
         handoffInProgress = true;
+        setText('call-state', 'HANDOFF_PENDING');
         syncControls();
         try {
           while (!handoffEnded && baitbotTurn < MAX_BAITBOT_TURNS) {
@@ -894,7 +1084,7 @@
               const data = await requestJson('/api/scenario4/handoff', requestOptions(body));
               const entries = applyScenarioResponse(data);
               baitbotTurn = responseTurn(data, nextTurn);
-              speakEntries(entries);
+              await speakEntries(entries);
               handoffEnded = Boolean(data.ended) || baitbotTurn >= MAX_BAITBOT_TURNS;
               renderHandoffProgress(baitbotTurn, handoffEnded ? '종료됨' : '진행 중');
             } catch (error) {
@@ -903,7 +1093,7 @@
                   const entries = applyScenarioResponse(error.payload);
                   baitbotTurn = responseTurn(error.payload, nextTurn);
                   handoffEnded = Boolean(error.payload.ended) || baitbotTurn >= MAX_BAITBOT_TURNS;
-                  speakEntries(entries);
+                  await speakEntries(entries);
                   renderHandoffProgress(baitbotTurn, handoffEnded ? '종료됨' : '부분 응답 후 중단됨');
                 } catch (responseError) {
                   error = responseError;
@@ -938,7 +1128,9 @@
 
       async function initialize() {
         initializeSpeech();
+        initializeSpeechInput();
         await loadConfig();
+        await loadAuthStatus();
         initialized = true;
         await resetSession();
         syncControls();
@@ -958,6 +1150,11 @@
       startNormalButton.addEventListener('click', () => startMode('NORMAL'));
       handoffButton.addEventListener('click', startHandoff);
       resetButton.addEventListener('click', resetSession);
+      authLoginButton.addEventListener('click', loginWithChatGPT);
+      micButton.addEventListener('click', () => {
+        if (listening) stopSpeechInput();
+        else startSpeechInput();
+      });
       ttsInput.addEventListener('change', () => {
         if (ttsInput.checked) {
           primeSpeech();
