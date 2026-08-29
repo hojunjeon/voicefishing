@@ -146,7 +146,7 @@ def main() -> None:
         asyncio.run(check_runtime_integration())
         print("test_scenario_rag: PASS")
     else:
-        print("test_scenario_rag: PASS (retrieval; runtime integration blocked by missing python-dotenv)")
+        print("test_scenario_rag: PASS (retrieval; runtime integration dependencies unavailable)")
 
 
 if __name__ == "__main__":
