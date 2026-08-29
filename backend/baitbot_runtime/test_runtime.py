@@ -13,10 +13,10 @@ from unittest.mock import patch
 
 from event_log import COMMON_FIELDS, JsonlEventLogger
 from runtime import (
+    CodexOAuthClient,
     DEFAULT_MODEL,
     MAX_SNAPSHOT_BYTES,
     BaitbotRuntime,
-    GoogleAIStudioClient,
     ProviderError,
     _safe_error,
     evaluate_safety,
@@ -105,104 +105,110 @@ def read_records(logger: JsonlEventLogger) -> list[dict]:
     return [json.loads(line) for line in logger.path.read_text(encoding="utf-8").splitlines()]
 
 
-class FakeHTTPResponse:
-    def __init__(self, status_code: int, *, headers: dict[str, str] | None = None, content: str = "ok") -> None:
-        self.status_code = status_code
-        self.headers = headers or {}
-        self._content = content
+class FakeProcess:
+    def __init__(self, *, stdout: bytes = b"{}", stderr: bytes = b"", returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.communicated: bytes | None = None
+        self.terminated = False
 
-    def json(self) -> dict:
-        return {"candidates": [{"content": {"parts": [{"text": self._content}]}}]}
+    async def communicate(self, input: bytes | None = None):
+        self.communicated = input
+        return self.stdout, self.stderr
 
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
 
-class InvalidHTTPResponse(FakeHTTPResponse):
-    def json(self) -> dict:
-        return {}
+    def kill(self) -> None:
+        self.terminated = True
+        self.returncode = -9
 
-
-class SequenceHTTPClient:
-    def __init__(self, responses: list[FakeHTTPResponse]) -> None:
-        self.responses = responses
-        self.calls = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        del args
-
-    async def post(self, endpoint, *, headers, json):
-        del endpoint, headers, json
-        response = self.responses[self.calls]
-        self.calls += 1
-        return response
+    async def wait(self):
+        return self.returncode
 
 
-async def check_gemini_retry_behavior() -> None:
-    import httpx
+async def check_codex_subprocess_contract() -> None:
+    calls: list[dict[str, object]] = []
+    process = FakeProcess(stdout=b'{"text":"ok","intent":"CLARIFY","end_call":false}')
 
-    async def run_case(responses: list[FakeHTTPResponse]):
-        with TemporaryDirectory() as temporary_directory:
-            logger = JsonlEventLogger(temporary_directory, run_id="run_retry_check")
-            transport = SequenceHTTPClient(responses)
-            sleeps: list[float] = []
+    async def fake_create(*argv, **kwargs):
+        calls.append({"argv": argv, "kwargs": kwargs})
+        return process
 
-            async def fake_sleep(delay: float) -> None:
-                sleeps.append(delay)
+    with patch("runtime.shutil.which", return_value="codex.exe"):
+        with patch("runtime.asyncio.create_subprocess_exec", fake_create):
+            client = CodexOAuthClient()
+            with patch.object(client, "_login_mode", return_value="chatgpt"):
+                value = await client.complete(
+                    operation="responder",
+                    messages=[
+                        {"role": "system", "content": "system secret"},
+                        {"role": "user", "content": "untrusted prompt"},
+                    ],
+                    model="gpt-5.5",
+                    reasoning="low",
+                    json_output=True,
+                )
+    assert value["text"] == "ok"
+    call = calls[0]
+    argv = list(call["argv"])
+    assert argv[:2] == ["codex.exe", "exec"]
+    for required in ("--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--model", "gpt-5.5", "-o", "-"):
+        assert required in argv
+    assert 'model_reasoning_effort="low"' in argv
+    assert call["kwargs"]["cwd"] != str(Path.cwd())
+    assert b"untrusted prompt" in process.communicated
+    assert b"system secret" not in process.communicated
 
-            with patch.object(httpx, "AsyncClient", lambda *args, **kwargs: transport):
-                with patch.object(asyncio, "sleep", fake_sleep):
-                    client = GoogleAIStudioClient("unit-test-key", event_logger=logger.log_event)
-                    try:
-                        value = await client.complete(
-                            operation="extractor",
-                            messages=[],
-                            model="test/model",
-                            reasoning="low",
-                            json_output=True,
-                        )
-                    except ProviderError as error:
-                        value = error
-                    records = read_records(logger)
-            logger.close()
-            return value, transport.calls, sleeps, records
 
-    value, calls, sleeps, records = await run_case(
-        [FakeHTTPResponse(429, headers={"Retry-After": "9"}), FakeHTTPResponse(200)]
-    )
-    assert value == "ok"
-    assert calls == 2
-    assert sleeps == [2.0], "Retry-After must be capped at two seconds"
-    retry_records = [record for record in records if record["event"] == "provider.retry"]
-    assert len(retry_records) == 1
-    assert retry_records[0]["operation"] == "extractor"
-    assert retry_records[0]["details"] == {
-        "attempt": 2,
-        "cause": "gemini_http_429",
-        "delay_ms": 2000,
-    }
+async def check_codex_auth_fail_closed() -> None:
+    process = FakeProcess(stdout=b"Logged in using ChatGPT\nextra", stderr=b"")
+    with patch("runtime.shutil.which", return_value="codex.exe"):
+        with patch("runtime.asyncio.create_subprocess_exec", return_value=process):
+            client = CodexOAuthClient()
+            assert (await client.auth_status())["authenticated"] is False
+            with patch.object(client, "_login_mode", return_value="api_key"):
+                try:
+                    await client.complete(
+                        operation="responder", messages=[], model="gpt-5.5", reasoning="low", json_output=True
+                    )
+                except ProviderError as error:
+                    assert str(error) == "codex_oauth_not_configured"
+                else:
+                    raise AssertionError("API-key mode must not execute Codex requests")
 
-    value, calls, sleeps, records = await run_case(
-        [FakeHTTPResponse(429), FakeHTTPResponse(429, headers={"Retry-After": "1"})]
-    )
-    assert isinstance(value, ProviderError) and str(value) == "gemini_http_429"
-    assert calls == 2
-    assert sleeps == [0.5]
-    assert len([record for record in records if record["event"] == "provider.retry"]) == 1
 
-    value, calls, sleeps, records = await run_case(
-        [FakeHTTPResponse(400), FakeHTTPResponse(200)]
-    )
-    assert isinstance(value, ProviderError) and str(value) == "gemini_http_400"
-    assert calls == 1, "non-429 responses must not be retried"
-    assert sleeps == []
-    assert not any(record["event"] == "provider.retry" for record in records)
+async def check_codex_runtime_selection_is_fixed() -> None:
+    runtime = BaitbotRuntime()
+    try:
+        for model, reasoning in (("gpt-5.4", "low"), ("gpt-5.5", "high")):
+            try:
+                await runtime.process("테스트", model=model, reasoning=reasoning)
+            except ValueError as error:
+                assert str(error) == "Codex runtime requires model gpt-5.5 and reasoning low"
+            else:
+                raise AssertionError("Codex runtime model and reasoning must be fixed")
+    finally:
+        await runtime.close()
 
-    value, calls, sleeps, records = await run_case([InvalidHTTPResponse(200)])
-    assert isinstance(value, ProviderError) and str(value) == "gemini_invalid_response"
-    assert calls == 1
-    assert sleeps == []
-    assert not any(record["event"] == "provider.retry" for record in records)
+
+async def check_codex_public_runtime_is_blocked() -> None:
+    with patch.dict(os.environ, {"VERCEL": "1"}, clear=False):
+        client = CodexOAuthClient()
+        try:
+            await client.complete(
+                operation="caller",
+                messages=[],
+                model="gpt-5.5",
+                reasoning="low",
+                json_output=False,
+            )
+        except ProviderError as error:
+            assert str(error) == "codex_not_supported_in_public_runtime"
+        else:
+            raise AssertionError("public runtimes must not execute local Codex OAuth requests")
 
 
 async def check_error_log_levels() -> None:
@@ -363,106 +369,6 @@ async def check_session_snapshot_continuity(event_logger: JsonlEventLogger) -> N
         raise AssertionError("oversize snapshots must be rejected")
 
 
-async def check_gemini_payload_contract() -> None:
-    import httpx
-
-    recorded: dict[str, object] = {}
-
-    class FakeResponse:
-        status_code = 200
-
-        def json(self):
-            return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
-
-    class FakeHTTPClient:
-        def __init__(self, *args, **kwargs):
-            del args, kwargs
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            del args
-
-        async def post(self, endpoint, *, headers, json):
-            recorded["endpoint"] = endpoint
-            recorded["headers"] = headers
-            recorded["payload"] = json
-            return FakeResponse()
-
-    with patch.object(httpx, "AsyncClient", FakeHTTPClient):
-        await GoogleAIStudioClient("unit-test-key").complete(
-            operation="responder",
-            messages=[
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "user"},
-            ],
-            model="test/model",
-            reasoning="none",
-            json_output=True,
-        )
-    payload = recorded["payload"]
-    assert recorded["endpoint"] == "https://generativelanguage.googleapis.com/v1beta/models/test/model:generateContent"
-    assert recorded["headers"]["x-goog-api-key"] == "unit-test-key"
-    assert "unit-test-key" not in json.dumps(payload)
-    assert payload["systemInstruction"]["parts"] == [{"text": "system"}]
-    assert payload["contents"] == [{"role": "user", "parts": [{"text": "user"}]}]
-    assert payload["generationConfig"]["responseMimeType"] == "application/json"
-    assert "reasoning" not in payload
-    assert "thinkingConfig" not in payload
-
-
-async def check_missing_gemini_key_error() -> None:
-    import runtime as runtime_module
-
-    with patch.object(runtime_module, "load_dotenv"):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("google_ai_studio", None)
-            runtime = BaitbotRuntime(event_logger=lambda *args, **kwargs: None)
-            assert runtime.key_configured is False
-            result = await runtime.process("안전계좌로 송금하라고 요구했습니다.")
-    assert result["errors"] == [
-        "responder: google_ai_studio_key_not_configured",
-        "extractor: google_ai_studio_key_not_configured",
-    ]
-
-
-def check_dotenv_loading_and_precedence() -> None:
-    import runtime as runtime_module
-
-    with TemporaryDirectory() as temporary_directory:
-        env_file = Path(temporary_directory) / "settings.env"
-        env_file.write_text(
-            "google_ai_studio=file-key\nGEMINI_MODEL=file-model\n",
-            encoding="utf-8",
-        )
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("google_ai_studio", None)
-            os.environ.pop("GEMINI_MODEL", None)
-            loaded = BaitbotRuntime(client=FakeClient(), env_file=env_file)
-            assert loaded.model == "file-model"
-
-        with patch.dict(os.environ, {"google_ai_studio": "env-key"}, clear=False):
-            kept = BaitbotRuntime(client=FakeClient(), env_file=env_file)
-            assert os.getenv("google_ai_studio") == "env-key"
-            assert kept.model == "file-model"
-
-    with patch.object(runtime_module, "load_dotenv") as load:
-        with patch.dict(os.environ, {"google_ai_studio": "env-key"}, clear=False):
-            BaitbotRuntime(client=FakeClient())
-        called_paths = [call.args[0] for call in load.call_args_list]
-        assert Path(__file__).resolve().parents[3] / ".env" in called_paths
-        assert Path(__file__).resolve().parents[2] / ".env" in called_paths
-
-
-def check_html_reasoning_default() -> None:
-    html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'value="gemini-2.0-flash-lite"' in html
-    assert "const DEFAULT_MODEL = 'gemini-2.0-flash-lite';" in html
-    assert '<option value="low" selected>low</option>' in html
-    assert "if (ALLOWED_REASONING.includes(config.reasoning)) reasoningInput.value = config.reasoning;" in html
-
-
 def check_api_boundary() -> None:
     from fastapi.testclient import TestClient
 
@@ -492,7 +398,7 @@ def check_api_boundary() -> None:
                 assert chat.status_code == 200
                 response = chat.json()
                 assert response["turn_id"] == "turn_0001"
-                assert "google_ai_studio" not in json.dumps(response).lower()
+                assert "access_token" not in json.dumps(response).lower()
                 assert "authorization" not in json.dumps(response).lower()
 
                 api_secret = "sk-api-test-secret"
@@ -545,7 +451,7 @@ async def main() -> None:
         try:
             fake = FakeClient()
             runtime = BaitbotRuntime(client=fake, event_logger=logger.log_event)
-            assert DEFAULT_MODEL == "gemini-2.0-flash-lite"
+            assert DEFAULT_MODEL == "gpt-5.5"
             assert runtime.model == DEFAULT_MODEL
             result = await runtime.process("안전계좌로 5백만 원을 보내세요.")
             assert set(fake.calls) == {"responder", "extractor"}, "PASS must call both agents"
@@ -691,7 +597,7 @@ async def main() -> None:
             assert secret_marker not in json.dumps(secret_failure, ensure_ascii=False)
             assert "bearer" not in json.dumps(secret_failure, ensure_ascii=False).lower()
             assert secret_failure["errors"] == ["responder: provider_error"]
-            assert _safe_error(ProviderError("gemini_http_400")) == "gemini_http_400"
+            assert _safe_error(ProviderError("codex_request_failed")) == "codex_request_failed"
             assert _safe_error(RuntimeError(f"Bearer {secret_marker}")) == "provider_error"
 
             both_failing = BaitbotRuntime(
@@ -713,16 +619,15 @@ async def main() -> None:
 
             await check_reset_serialization(logger)
             await check_session_snapshot_continuity(logger)
-            await check_gemini_retry_behavior()
+            await check_codex_subprocess_contract()
+            await check_codex_auth_fail_closed()
+            await check_codex_runtime_selection_is_fixed()
+            await check_codex_public_runtime_is_blocked()
             await check_error_log_levels()
-            await check_gemini_payload_contract()
-            await check_missing_gemini_key_error()
-            check_dotenv_loading_and_precedence()
-            check_html_reasoning_default()
 
             logger.log_event(
                 "redaction.check",
-                google_ai_studio="do-not-log-key",
+                access_token="do-not-log-secret",
                 details={"Authorization": "Bearer do-not-log-token", "inline": "token=do-not-log-inline"},
             )
             records = read_records(logger)
@@ -782,7 +687,7 @@ async def main() -> None:
                 for record in records
             )
             rendered = logger.path.read_text(encoding="utf-8")
-            assert "do-not-log-key" not in rendered
+            assert "do-not-log-secret" not in rendered
             assert "do-not-log-token" not in rendered
             assert "do-not-log-inline" not in rendered
             assert "Authorization" not in rendered
