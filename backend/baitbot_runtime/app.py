@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,75 @@ class Scenario4HandoffRequest(BaseModel):
     reasoning: str | None = None
 
 
+_AUTH_STATUS_VALUES = frozenset(
+    {
+        "authenticated",
+        "ready",
+        "unauthenticated",
+        "logged_out",
+        "pending",
+        "starting",
+        "unavailable",
+        "error",
+        "unsupported",
+    }
+)
+_AUTH_FAILURE_DETAIL = "ChatGPT OAuth is unavailable"
+_AUTH_LOCAL_DETAIL = "ChatGPT OAuth login is available only from the local host"
+_AUTH_CONFLICT_CODES = frozenset({"codex_already_authenticated", "codex_login_in_progress", "codex_api_key_mode"})
+_AUTH_PROVIDERS = frozenset({"codex", "codex_cli", "codex_oauth", "injected"})
+_AUTH_METHODS = frozenset({"chatgpt_oauth", "synthetic"})
+
+
+def _safe_auth_status(value: Any) -> dict[str, Any]:
+    """Expose only non-secret OAuth state returned by the runtime."""
+
+    source = value if isinstance(value, Mapping) else {}
+    authenticated = source.get("authenticated") is True or source.get("logged_in") is True
+    raw_status = source.get("status")
+    if isinstance(raw_status, str) and raw_status in _AUTH_STATUS_VALUES:
+        status = raw_status
+    else:
+        status = None
+    if status in {"authenticated", "ready"}:
+        authenticated = True
+    has_auth_signal = (
+        isinstance(source.get("authenticated"), bool)
+        or isinstance(source.get("logged_in"), bool)
+        or status in {"authenticated", "ready", "unauthenticated", "logged_out"}
+    )
+    result: dict[str, Any] = {"authenticated": authenticated} if has_auth_signal else {}
+    if status is not None:
+        result["status"] = status
+    for key in ("pending", "started"):
+        if isinstance(source.get(key), bool):
+            result[key] = source[key]
+    mode = source.get("mode")
+    if mode in {None, "chatgpt", "api_key", "synthetic"} and "mode" in source:
+        result["mode"] = mode
+    if source.get("provider") in _AUTH_PROVIDERS:
+        result["provider"] = source["provider"]
+    if source.get("auth_method") in _AUTH_METHODS:
+        result["auth_method"] = source["auth_method"]
+    if source.get("model") == "gpt-5.5":
+        result["model"] = "gpt-5.5"
+    if source.get("reasoning") == "low":
+        result["reasoning"] = "low"
+    return result or {"authenticated": False}
+
+
+def _is_loopback(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except (TypeError, ValueError):
+        return False
+
+
+def _auth_failure_status(error: BaseException) -> int:
+    return 409 if isinstance(error, ProviderError) and str(error).strip().lower() in _AUTH_CONFLICT_CODES else 503
+
+
 def _safe_log_path() -> str | None:
     try:
         return str(get_log_path())
@@ -64,6 +135,19 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        close = getattr(runtime, "close", None)
+        if callable(close):
+            try:
+                await runtime.close()
+            except Exception:
+                log_event(
+                    "runtime.close.failed",
+                    level="ERROR",
+                    status="failed",
+                    outcome="failure",
+                    process_id=os.getpid(),
+                    cause="runtime_close_failed",
+                )
         log_event(
             "server.stopped",
             status="stopped",
@@ -167,6 +251,26 @@ async def favicon() -> Response:
 @app.get("/api/config")
 async def config() -> dict:
     return runtime.config()
+
+
+@app.get("/api/auth/status")
+async def auth_status() -> dict[str, Any]:
+    try:
+        return _safe_auth_status(await runtime.auth_status())
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=_AUTH_FAILURE_DETAIL) from error
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request) -> dict[str, Any]:
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        raise HTTPException(status_code=503, detail=_AUTH_FAILURE_DETAIL)
+    if request.headers.get("X-Baitbot-Local") != "1" or not _is_loopback(request):
+        raise HTTPException(status_code=403, detail=_AUTH_LOCAL_DETAIL)
+    try:
+        return _safe_auth_status(await runtime.start_auth_login())
+    except Exception as error:
+        raise HTTPException(status_code=_auth_failure_status(error), detail=_AUTH_FAILURE_DETAIL) from error
 
 
 @app.post("/api/chat")
