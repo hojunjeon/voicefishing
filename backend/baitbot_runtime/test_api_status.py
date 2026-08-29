@@ -4,6 +4,7 @@ import contextlib
 import importlib
 import io
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -35,6 +36,15 @@ class FakeRuntime:
     ) -> dict:
         del message, model, reasoning, session_snapshot
         return deepcopy(self.result)
+
+    async def auth_status(self) -> dict:
+        return {"authenticated": True, "mode": "chatgpt"}
+
+    async def start_auth_login(self) -> dict:
+        return {"started": True, "status": "pending"}
+
+    async def close(self) -> None:
+        return None
 
 
 def _result(errors: list[str]) -> dict:
@@ -80,6 +90,42 @@ def check_favicon_contract() -> None:
         assert response.status_code == 204
         assert response.content == b""
         assert "/favicon.ico" not in client.get("/openapi.json").json()["paths"]
+
+
+def check_oauth_api_boundary() -> None:
+    original_runtime = app_module.runtime
+    previous_vercel = os.environ.pop("VERCEL", None)
+    previous_vercel_env = os.environ.pop("VERCEL_ENV", None)
+    try:
+        app_module.runtime = FakeRuntime(_result([]))
+        with TestClient(app_module.app, client=("127.0.0.1", 50000)) as client:
+            status = client.get("/api/auth/status")
+            assert status.status_code == 200
+            assert status.json()["authenticated"] is True
+            assert "email" not in status.json() and "token" not in status.json()
+            assert client.post("/api/auth/login").status_code == 403
+            started = client.post("/api/auth/login", headers={"X-Baitbot-Local": "1"})
+            assert started.status_code == 200
+            assert started.json()["status"] == "pending"
+        with TestClient(app_module.app, client=("192.0.2.1", 50000)) as client:
+            assert client.post(
+                "/api/auth/login", headers={"X-Baitbot-Local": "1"}
+            ).status_code == 403
+        os.environ["VERCEL"] = "1"
+        with TestClient(app_module.app, client=("127.0.0.1", 50000)) as client:
+            assert client.post(
+                "/api/auth/login", headers={"X-Baitbot-Local": "1"}
+            ).status_code == 503
+    finally:
+        if previous_vercel is None:
+            os.environ.pop("VERCEL", None)
+        else:
+            os.environ["VERCEL"] = previous_vercel
+        if previous_vercel_env is None:
+            os.environ.pop("VERCEL_ENV", None)
+        else:
+            os.environ["VERCEL_ENV"] = previous_vercel_env
+        app_module.runtime = original_runtime
 
 
 def check_middleware_status_events() -> None:
@@ -255,6 +301,7 @@ def check_session_snapshot_boundary_and_ui_contract() -> None:
 def main() -> None:
     check_chat_status_and_body()
     check_favicon_contract()
+    check_oauth_api_boundary()
     check_middleware_status_events()
     check_vercel_stream_split()
     check_session_snapshot_boundary_and_ui_contract()
