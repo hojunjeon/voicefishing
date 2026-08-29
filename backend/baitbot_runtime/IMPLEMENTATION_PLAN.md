@@ -9,12 +9,11 @@
 
 ## Provider contract
 
-- Use Google AI Studio Gemini with model `gemini-2.0-flash-lite` by default (supporting `gemini-2.5-flash-lite` alias and `GEMINI_API_KEY`/`GOOGLE_API_KEY`).
-- Read `google_ai_studio` from `C:\Users\SSAFY\Desktop\.env` with `python-dotenv`; an existing process environment value wins.
-- Send `POST /v1beta/models/{model}:generateContent` with the `x-goog-api-key` header.
-- Map `system` messages to `systemInstruction`, other messages to Gemini `contents`, and request JSON with `responseMimeType=application/json`.
-- Keep the reasoning UI/API field for compatibility, but omit reasoning and `thinkingConfig` from Gemini payloads.
-- Retry HTTP 429 exactly once, honoring `Retry-After` up to two seconds.
+- Use the local Codex CLI ChatGPT OAuth session with model `gpt-5.5` and reasoning `low`.
+- Authenticate with `codex login`, then verify with `codex login status`; the runtime never reads, copies, logs, or uploads `auth.json`.
+- Keep OAuth status responses limited to authenticated/pending/error state and safe provider metadata; never return tokens, email, or raw CLI output.
+- Expose `/api/auth/login` only on loopback IPv4/IPv6 with the `X-Baitbot-Local: 1` browser guard. Reject login in Vercel/public runtimes.
+- Keep the existing responder/extractor JSON contract and map provider failures to generic `409`/`503` responses.
 
 ## Logging design
 
@@ -24,7 +23,7 @@
 - One file per server run: `runtime_<UTC timestamp>_<run id>.jsonl`
 - UTF-8, one JSON object per line, append-only for that process.
 - Common fields: `timestamp`, `level`, `event`, `run_id`, `request_id`, `session_id`, `turn_id`, `operation`, `status`, `duration_ms`, `model`, `reasoning`, `details`.
-- Never record `google_ai_studio`, `x-goog-api-key`, or other credential values.
+- Never record OAuth tokens, `auth.json`, email, Authorization values, or raw Codex CLI stdout/stderr.
 
 ### Events to record
 
@@ -36,8 +35,8 @@
 | `session.created` / `session.reset` | previous/new session ID |
 | `turn.received` | exact scammer text, turn sequence |
 | `safety.completed` | PASS/DEFEND, matched rule, attack type, duration |
-| `provider.request.started` | responder/extractor, model, preserved reasoning field, complete Gemini message payload without credentials |
-| `provider.request.completed` / `provider.request.failed` | raw provider result or safe error, duration and HTTP error code |
+| `provider.request.started` | responder/extractor, model, preserved reasoning field, complete Codex message payload without credentials |
+| `provider.request.completed` / `provider.request.failed` | sanitized provider result or safe error, duration and error code |
 | `responder.completed` / `responder.fallback` | exact baitbot text, intent, end-call flag, failure reason when applicable |
 | `extractor.completed` / `extractor.failed` | raw patches, applied count, failure reason |
 | `event_schema.updated` | extracted patch and resulting event schema |
@@ -78,7 +77,9 @@
 - [x] Rewrite Responder prompt and fallback texts to the passive stance.
 - [x] Add regression checks that routine identity demands, written-notice demands, and hang-up threats are not the default prompt/fallback.
 - [x] Keep existing runtime/API tests passing.
-- [x] Restart the BAT server and verify the UI in a real browser.
+- [x] Add loopback-only Codex OAuth status/login API and authentication-gated Scenario 4 start controls.
+- [x] Show a manual Scenario 4 handoff for every active scenario; suspicion is guidance only.
+- [x] Start the local server and verify the UI in a real browser.
 
 ## Review checklist
 
@@ -86,7 +87,7 @@
 - [x] Logs correlate run, request, session, turn, and provider operation.
 - [x] Exact conversation and extraction data are recorded.
 - [x] Success, partial failure, failure, duration, and safe root cause are recorded.
-- [x] API keys and Authorization values never appear in logs or responses.
+- [x] OAuth tokens, email, auth.json, raw CLI output, and Authorization values never appear in logs or responses.
 - [x] Concurrent Responder/Extractor entries are not corrupted or interleaved as invalid JSON.
 - [x] Reset and server restart produce understandable session/run boundaries.
 - [x] Event table always shows all eight planned fields and readable empty states.
