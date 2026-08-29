@@ -9,4 +9,5 @@
 Markdown은 상대 경로 이미지를 사용하므로 폴더 구조를 유지하십시오.
 
 - 실행 방법: `backend/baitbot_runtime/README.md`
-- Production: https://baitbot.vercel.app
+- 기존 Vercel 화면: https://baitbot.vercel.app
+- Codex ChatGPT OAuth를 사용하는 시나리오 4 LLM 데모는 로컬 서버에서만 실행합니다.
