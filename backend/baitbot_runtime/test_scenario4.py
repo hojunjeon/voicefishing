@@ -15,18 +15,22 @@ except ModuleNotFoundError:
 class FakeScenarioRag:
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.assess_calls = 0
+        self.retrieve_calls = 0
 
     def assess(self, query: str) -> dict:
+        self.assess_calls += 1
         self.queries.append(query)
         suspicious = "안전계좌" in query or "원격제어앱" in query
         return {
             "suspicion_percent": 100 if suspicious else 20,
             "scam_state": "PHISHING_CONFIRMED" if suspicious else "NORMAL",
-            "handoff_available": suspicious,
+            "handoff_available": True,
             "results": [{"id": "fake_scam" if suspicious else "fake_normal", "is_benign": not suspicious}],
         }
 
     def retrieve(self, query: str, *, top_k: int, include_benign: bool) -> list[dict]:
+        self.retrieve_calls += 1
         del query, top_k, include_benign
         return []
 
@@ -108,6 +112,7 @@ def _check_sequence_and_mirrors() -> None:
         scenario_id = start["scenario_id"]
         assert [entry["speaker"] for entry in start["conversation"]] == ["CALLER"]
         assert start["caller_message"] == start["conversation"][-1]["text"]
+        assert start["scam_state"] == "UNCLASSIFIED"
         assert start["handoff_available"] is True
 
         optimistic_conversation = start["conversation"] + [{"speaker": "USER", "text": "무슨 확인인가요?"}]
@@ -214,8 +219,56 @@ def _check_sequence_and_mirrors() -> None:
 
         assert client.post("/api/reset").status_code == 200
         normal = _start(client, mode="NORMAL")
-        assert normal["handoff_available"] is False
-        assert client.post("/api/scenario4/handoff", json=_handoff_payload(normal, 1)).status_code == 409
+        assert normal["handoff_available"] is True
+        normal_handoff = client.post("/api/scenario4/handoff", json=_handoff_payload(normal, 1))
+        assert normal_handoff.status_code == 200, normal_handoff.text
+        assert normal_handoff.json()["call_state"] == "BAIT_ACTIVE"
+
+
+def _check_confirmed_state_skips_future_rag() -> None:
+    fake_client = FakeClient()
+    rag = FakeScenarioRag()
+    app_module.runtime = app_module.BaitbotRuntime(client=fake_client, scenario_rag=rag)
+    with TestClient(app_module.app) as client:
+        start = _start(client)
+        reply = client.post(
+            "/api/scenario4/caller",
+            json={
+                "scenario_id": start["scenario_id"],
+                "mode": start["mode"],
+                "conversation": start["conversation"],
+                "message": "계속 말씀하세요.",
+                "model": start["model"],
+                "reasoning": start["reasoning"],
+            },
+        )
+        assert reply.status_code == 200, reply.text
+        start = reply.json()
+        assert start["scam_state"] == "PHISHING_CONFIRMED"
+        before = (rag.assess_calls, rag.retrieve_calls)
+        handoff = client.post("/api/scenario4/handoff", json=_handoff_payload(start, 1))
+        assert handoff.status_code == 200, handoff.text
+        body = handoff.json()
+        assert body["scam_state"] == "PHISHING_CONFIRMED"
+        assert body["scenario_rag"]["status"] == "SKIPPED"
+        assert (rag.assess_calls, rag.retrieve_calls) == before
+
+
+def _check_handoff_preserves_state_until_next_turn() -> None:
+    fake_client = FakeClient()
+    rag = FakeScenarioRag()
+    app_module.runtime = app_module.BaitbotRuntime(client=fake_client, scenario_rag=rag)
+    with TestClient(app_module.app) as client:
+        start = _start(client, mode="NORMAL")
+        assert start["scam_state"] == "UNCLASSIFIED"
+        first = client.post("/api/scenario4/handoff", json=_handoff_payload(start, 1))
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["scam_state"] == "UNCLASSIFIED"
+        assert rag.assess_calls == 0
+        second = client.post("/api/scenario4/handoff", json=_handoff_payload(first_body, 2))
+        assert second.status_code == 200, second.text
+        assert rag.assess_calls == 1
 
 
 def _check_conversation_budget() -> None:
@@ -273,6 +326,8 @@ def main() -> None:
         _check_sequence_and_mirrors()
         _check_conversation_budget()
         _check_partial_handoffs()
+        _check_confirmed_state_skips_future_rag()
+        _check_handoff_preserves_state_until_next_turn()
     finally:
         app_module.runtime = original_runtime
     print("test_scenario4: PASS")
